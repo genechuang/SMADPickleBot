@@ -18,9 +18,9 @@ The booking system has two modes:
 
 ## Important Notes
 
-1. **Timing Strategy**: Courts become available 7 days out at 12:00:15 AM PST. The workflow triggers at 11:58 PM to allow ~30 seconds for GitHub Actions warm-up, then waits until exactly 12:00:15 AM before booking.
+1. **Timing Strategy**: Courts become available 7 days out at 12:00:15 AM PST. The workflow triggers at 11:55 PM to avoid midnight contention, then waits until exactly 12:00:15 AM before booking.
 
-2. **Timezone**: GitHub Actions runs in UTC. The script automatically converts to PST/PDT for booking time calculations.
+2. **Timezone**: All timestamps are in PST/PDT timezone. GitHub Actions generates the invoke timestamp using `TZ='America/Los_Angeles'` for consistency.
 
 3. **Day of Week**: Use day names (Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday)
 

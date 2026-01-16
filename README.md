@@ -90,7 +90,7 @@ When `BOOKING_LIST` is set in `.env`, the script operates in **Booking List Mode
 # BOOKING_TARGET_TIME=00:00:15
 
 # Run with invoke time (used by GitHub Actions)
-python ath-booking.py --invoke-time "01-16-2026 07:55:00"
+python ath-booking.py --invoke-time "01-16-2026 23:55:00"
 
 # Run without invoke time (books immediately for testing)
 python ath-booking.py
@@ -98,12 +98,14 @@ python ath-booking.py
 
 **How it works:**
 - Parses `BOOKING_LIST` and filters bookings for today's day of week
-- If `--invoke-time` is provided: waits until `BOOKING_TARGET_TIME` (default 00:00:15 AM PST)
+- If `--invoke-time` is provided (in PST/PDT): waits until `BOOKING_TARGET_TIME` (default 00:00:15 AM PST)
 - Books courts **7 days in advance** (when courts become available)
 - If `COURT_NAME=both`: books both North and South Pickleball Courts
+- All timestamps and date handling use PST/PDT timezone
 
 **Example:**
-- Today is Tuesday
+- GitHub Actions runs at 11:55 PM PST (Tuesday)
+- Invoke time: `01-16-2026 23:55:00` PST
 - `BOOKING_LIST=Tuesday 7:00 PM,Friday 4:00 PM`
 - Script finds "Tuesday 7:00 PM", waits until 12:00:15 AM, then books next Tuesday (7 days out) at 7:00 PM
 
@@ -133,7 +135,7 @@ python ath-booking.py
 | `--time` | Booking time in 12-hour format | `"10:00 AM"` |
 | `--court` | Court name or "both" (see available courts below) | `"South Pickleball Court"` or `"both"` |
 | `--duration` | Duration in minutes (60 or 120) | `"120"` |
-| `--invoke-time` | Invoke timestamp in MM-DD-YYYY HH:MM:SS format (UTC) | `"01-16-2026 07:55:00"` |
+| `--invoke-time` | Invoke timestamp in MM-DD-YYYY HH:MM:SS format (PST/PDT) | `"01-16-2026 23:55:00"` |
 
 ### Available Courts
 

@@ -65,8 +65,9 @@ jobs:
 
     - name: Run booking script with current timestamp
       run: |
-        INVOKE_TIME=$(date -u +"%m-%d-%Y %H:%M:%S")
-        echo "Invoke time (UTC): $INVOKE_TIME"
+        # Generate timestamp in PST/PDT timezone
+        INVOKE_TIME=$(TZ='America/Los_Angeles' date +"%m-%d-%Y %H:%M:%S")
+        echo "Invoke time (PST/PDT): $INVOKE_TIME"
 
         if [ -n "${{ github.event.inputs.date }}" ]; then
           # Manual trigger with custom parameters

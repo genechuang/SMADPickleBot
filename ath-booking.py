@@ -1158,17 +1158,17 @@ async def main(booking_date=None, booking_time=None, court_name=None, booking_du
 
         # Determine the reference datetime for day-of-week matching
         if invoke_time:
-            print(f"Script invoked at: {invoke_time}")
-            # Parse invoke_time (format: "MM-DD-YYYY HH:MM:SS" UTC)
+            print(f"Script invoked at: {invoke_time} PST/PDT")
+            # Parse invoke_time (format: "MM-DD-YYYY HH:MM:SS" in PST/PDT timezone)
             try:
-                invoke_datetime_utc = datetime.strptime(invoke_time, "%m-%d-%Y %H:%M:%S")
-                invoke_datetime_utc = pytz.utc.localize(invoke_datetime_utc)
+                # Parse the timestamp string
+                invoke_datetime_naive = datetime.strptime(invoke_time, "%m-%d-%Y %H:%M:%S")
 
-                # Convert to PST/PDT for processing
+                # Localize it to PST/PDT timezone
                 pst_tz = pytz.timezone('America/Los_Angeles')
-                invoke_datetime_pst = invoke_datetime_utc.astimezone(pst_tz)
+                invoke_datetime_pst = pst_tz.localize(invoke_datetime_naive)
 
-                print(f"Converted to PST/PDT: {invoke_datetime_pst.strftime('%m/%d/%Y %H:%M:%S %Z')}")
+                print(f"Processing with PST/PDT time: {invoke_datetime_pst.strftime('%m/%d/%Y %H:%M:%S %Z')}")
             except Exception as e:
                 print(f"ERROR: Failed to parse invoke_time '{invoke_time}': {e}")
                 return
