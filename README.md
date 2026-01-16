@@ -156,7 +156,7 @@ For automated daily bookings, see [GITHUB_ACTION_SETUP.md](GITHUB_ACTION_SETUP.m
 4. Script waits until 12:00:15 AM PST, then books courts 7 days in advance
 
 **Key Features:**
-- ⏰ Automatic scheduling with cron
+- ⏰ Automatic scheduling with cron (manual DST adjustment required twice/year)
 - 🔄 Weekly recurring bookings by day of week
 - 🎯 5-minute grace period for GitHub Actions delays
 - 🏓 Multi-court booking support (`COURT_NAME=both`)
