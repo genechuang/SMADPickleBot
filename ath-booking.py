@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import json
 import os
+import sys
 import pytz
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -32,6 +33,79 @@ from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+# ==================== TWELVE-FACTOR APP UTILITIES ====================
+
+def log(level, message, **kwargs):
+    """
+    Structured logging following twelve-factor app principles.
+    Outputs JSON-formatted logs to stdout/stderr for better parsing and monitoring.
+
+    Args:
+        level: Log level (INFO, WARN, ERROR, DEBUG)
+        message: Log message
+        **kwargs: Additional structured data to include in log
+    """
+    log_entry = {
+        "timestamp": datetime.now(pytz.UTC).isoformat(),
+        "level": level,
+        "message": message,
+        **kwargs
+    }
+    output = sys.stderr if level == "ERROR" else sys.stdout
+    print(json.dumps(log_entry), file=output, flush=True)
+
+
+def validate_config():
+    """
+    Validate required environment variables at startup (twelve-factor config).
+    Fails fast if required configuration is missing.
+
+    Returns:
+        dict: Configuration dictionary if valid
+
+    Exits:
+        sys.exit(1) if validation fails
+    """
+    required = {
+        'ATHENAEUM_USERNAME': os.getenv('ATHENAEUM_USERNAME'),
+        'ATHENAEUM_PASSWORD': os.getenv('ATHENAEUM_PASSWORD'),
+    }
+
+    optional = {
+        'BOOKING_LIST': os.getenv('BOOKING_LIST', ''),
+        'BOOKING_DATE_TIME': os.getenv('BOOKING_DATE_TIME', '01/20/2026 10:00 AM'),
+        'COURT_NAME': os.getenv('COURT_NAME', 'North Pickleball Court'),
+        'BOOKING_DURATION': os.getenv('BOOKING_DURATION', '120'),
+        'BOOKING_TARGET_TIME': os.getenv('BOOKING_TARGET_TIME', '00:00:15'),
+        'SAFETY_MODE': os.getenv('SAFETY_MODE', 'True'),
+        'HEADLESS': os.getenv('HEADLESS', 'False'),
+        'GMAIL_USERNAME': os.getenv('GMAIL_USERNAME'),
+        'GMAIL_APP_PASSWORD': os.getenv('GMAIL_APP_PASSWORD'),
+        'NOTIFICATION_EMAIL': os.getenv('NOTIFICATION_EMAIL'),
+    }
+
+    # Check for missing required variables
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        log("ERROR", "Missing required environment variables", missing=missing)
+        print("\n[ERROR] Missing required environment variables:", file=sys.stderr)
+        for var in missing:
+            print(f"  - {var}", file=sys.stderr)
+        print("\nPlease set these in your .env file or environment.", file=sys.stderr)
+        sys.exit(1)
+
+    # Combine and return all config
+    config = {**required, **optional}
+    log("INFO", "Configuration validated successfully",
+        has_email=bool(config['GMAIL_USERNAME']),
+        has_booking_list=bool(config['BOOKING_LIST']))
+
+    return config
+
+
+# ==================== END TWELVE-FACTOR UTILITIES ====================
 
 
 class AthenaeumBooking:
@@ -1205,44 +1279,39 @@ def send_email_notification(subject, body_html, booking_summary, screenshot_file
 
 
 async def main(booking_date=None, booking_time=None, court_name=None, booking_duration=None, invoke_time=None):
-    # ==================== CONFIGURATION ====================
-    # Load credentials from environment variables
-    import os
+    # ==================== TWELVE-FACTOR CONFIGURATION ====================
+    # Validate all environment variables at startup (fail fast)
+    config = validate_config()
 
-    ATHENAEUM_USERNAME = os.getenv('ATHENAEUM_USERNAME')
-    ATHENAEUM_PASSWORD = os.getenv('ATHENAEUM_PASSWORD')
-
-    if not ATHENAEUM_USERNAME or not ATHENAEUM_PASSWORD:
-        print("ERROR: Missing credentials!")
-        print("Please set environment variables in your .env file")
-        return
+    ATHENAEUM_USERNAME = config['ATHENAEUM_USERNAME']
+    ATHENAEUM_PASSWORD = config['ATHENAEUM_PASSWORD']
 
     # Safety mode - set to False to actually complete the booking
-    SAFETY_MODE = os.getenv('SAFETY_MODE', 'True').lower() != 'false'
+    SAFETY_MODE = config['SAFETY_MODE'].lower() != 'false'
 
     # Run in headless mode (False = show browser window)
-    HEADLESS = os.getenv('HEADLESS', 'False').lower() == 'true'
+    HEADLESS = config['HEADLESS'].lower() == 'true'
 
     # Court options:
     #   'North Pickleball Court'
     #   'South Pickleball Court'
     #   'West Tennis Court'
     #   'East Tennis Court'
-    COURT_NAME = court_name or os.getenv('COURT_NAME', 'North Pickleball Court')
+    COURT_NAME = court_name or config['COURT_NAME']
 
     # Duration in minutes: 60 or 120
-    BOOKING_DURATION = booking_duration or os.getenv('BOOKING_DURATION', '120')
+    BOOKING_DURATION = booking_duration or config['BOOKING_DURATION']
 
     # Target booking time (for waiting in Booking List Mode)
     # Format: HH:MM:SS (24-hour format), e.g., "00:00:15" for 12:00:15 AM
-    BOOKING_TARGET_TIME = os.getenv('BOOKING_TARGET_TIME', '00:00:15')
+    BOOKING_TARGET_TIME = config['BOOKING_TARGET_TIME']
 
     # =======================================================
     # TWO MODES: Booking List Mode vs. Manual Single Booking Mode
     # =======================================================
 
     # Check if BOOKING_LIST is set (Booking List Mode)
-    BOOKING_LIST = os.getenv('BOOKING_LIST', '')
+    BOOKING_LIST = config['BOOKING_LIST']
 
     # If --booking-date-time was passed via command-line, always use Manual Single Booking Mode
     # regardless of whether BOOKING_LIST exists
@@ -1312,7 +1381,7 @@ async def main(booking_date=None, booking_time=None, court_name=None, booking_du
         print("\n=== MANUAL SINGLE BOOKING MODE ===")
         # Manual booking mode with explicit parameters
         # Parse BOOKING_DATE_TIME format: "MM/DD/YYYY HH:MM AM/PM"
-        booking_date_time_str = os.getenv('BOOKING_DATE_TIME', '01/20/2026 10:00 AM')
+        booking_date_time_str = config['BOOKING_DATE_TIME']
 
         try:
             # Split into date and time parts
