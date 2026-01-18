@@ -57,55 +57,183 @@ def log(level, message, **kwargs):
     print(json.dumps(log_entry), file=output, flush=True)
 
 
-def validate_config():
+# ==================== END TWELVE-FACTOR UTILITIES ====================
+
+
+def prepare_booking_list_mode(booking_list_str, invoke_time, target_time_str):
     """
-    Validate required environment variables at startup (twelve-factor config).
-    Fails fast if required configuration is missing.
+    Prepare booking list for automated daily scheduling.
+
+    Args:
+        booking_list_str: BOOKING_LIST environment variable
+        invoke_time: Invoke timestamp string (MM-DD-YYYY HH:MM:SS) or None
+        target_time_str: Target booking time (HH:MM:SS)
 
     Returns:
-        dict: Configuration dictionary if valid
-
-    Exits:
-        sys.exit(1) if validation fails
+        tuple: (to_book_list, booking_date, target_hour, target_minute, target_second, should_wait)
+        - to_book_list: List of (day_of_week, time_str) tuples to book
+        - booking_date: Date to book (7 days from target time)
+        - target_hour, target_minute, target_second: Parsed target time components
+        - should_wait: Whether to wait for target time before booking
     """
-    required = {
-        'ATHENAEUM_USERNAME': os.getenv('ATHENAEUM_USERNAME'),
-        'ATHENAEUM_PASSWORD': os.getenv('ATHENAEUM_PASSWORD'),
-    }
+    pst_tz = pytz.timezone('America/Los_Angeles')
 
-    optional = {
-        'BOOKING_LIST': os.getenv('BOOKING_LIST', ''),
-        'BOOKING_DATE_TIME': os.getenv('BOOKING_DATE_TIME', '01/20/2026 10:00 AM'),
-        'COURT_NAME': os.getenv('COURT_NAME', 'North Pickleball Court'),
-        'BOOKING_DURATION': os.getenv('BOOKING_DURATION', '120'),
-        'BOOKING_TARGET_TIME': os.getenv('BOOKING_TARGET_TIME', '00:00:15'),
-        'SAFETY_MODE': os.getenv('SAFETY_MODE', 'True'),
-        'HEADLESS': os.getenv('HEADLESS', 'False'),
-        'GMAIL_USERNAME': os.getenv('GMAIL_USERNAME'),
-        'GMAIL_APP_PASSWORD': os.getenv('GMAIL_APP_PASSWORD'),
-        'NOTIFICATION_EMAIL': os.getenv('NOTIFICATION_EMAIL'),
-    }
+    # Determine the reference datetime for day-of-week matching
+    if invoke_time:
+        print(f"Script invoked at: {invoke_time} PST/PDT")
+        try:
+            invoke_datetime_naive = datetime.strptime(invoke_time, "%m-%d-%Y %H:%M:%S")
+            invoke_datetime_pst = pst_tz.localize(invoke_datetime_naive)
+            print(f"Processing with PST/PDT time: {invoke_datetime_pst.strftime('%m/%d/%Y %H:%M:%S %Z')}")
+        except Exception as e:
+            print(f"ERROR: Failed to parse invoke_time '{invoke_time}': {e}")
+            return None
+    else:
+        print("No invoke_time provided, using current PST time")
+        invoke_datetime_pst = datetime.now(pst_tz)
+        print(f"Current PST time: {invoke_datetime_pst.strftime('%m/%d/%Y %H:%M:%S %Z')}")
 
-    # Check for missing required variables
-    missing = [k for k, v in required.items() if not v]
-    if missing:
-        log("ERROR", "Missing required environment variables", missing=missing)
-        print("\n[ERROR] Missing required environment variables:", file=sys.stderr)
-        for var in missing:
-            print(f"  - {var}", file=sys.stderr)
-        print("\nPlease set these in your .env file or environment.", file=sys.stderr)
-        sys.exit(1)
+    print(f"BOOKING_LIST: {booking_list_str}")
 
-    # Combine and return all config
-    config = {**required, **optional}
-    log("INFO", "Configuration validated successfully",
-        has_email=bool(config['GMAIL_USERNAME']),
-        has_booking_list=bool(config['BOOKING_LIST']))
+    # Get list of bookings for today's day of week
+    to_book_list = get_booking_list(booking_list_str, invoke_datetime_pst)
 
-    return config
+    if not to_book_list:
+        print("\n[INFO] No bookings scheduled for today. Exiting.")
+        return None
+
+    print(f"\n=== Bookings to make today ===")
+    for idx, (_day_of_week, time_str) in enumerate(to_book_list, 1):
+        print(f"  {idx}. {time_str}")
+
+    # Parse target booking time
+    try:
+        time_parts = target_time_str.split(':')
+        target_hour = int(time_parts[0])
+        target_minute = int(time_parts[1])
+        target_second = int(time_parts[2])
+        print(f"\nTarget booking time: {target_hour:02d}:{target_minute:02d}:{target_second:02d} PST")
+    except (ValueError, IndexError) as e:
+        print(f"\n! Invalid BOOKING_TARGET_TIME format: '{target_time_str}', using default 00:00:15")
+        target_hour, target_minute, target_second = 0, 0, 15
+
+    # Calculate booking date: 7 days from TARGET BOOKING TIME (not invoke time)
+    now_pst = datetime.now(pst_tz)
+    target_booking_datetime = now_pst.replace(hour=target_hour, minute=target_minute, second=target_second, microsecond=0)
+
+    # Handle midnight boundary
+    if target_booking_datetime < now_pst and (now_pst - target_booking_datetime).total_seconds() > 12 * 3600:
+        target_booking_datetime = target_booking_datetime + timedelta(days=1)
+    elif target_booking_datetime > now_pst:
+        pass  # target_booking_datetime is already correct
+
+    booking_date_obj = target_booking_datetime + timedelta(days=7)
+    booking_date = booking_date_obj.strftime('%m/%d/%Y')
+
+    print(f"\nTarget booking time: {target_booking_datetime.strftime('%m/%d/%Y %I:%M:%S %p %Z')}")
+    print(f"Booking date (7 days from target): {booking_date}")
+
+    return (to_book_list, booking_date)
 
 
-# ==================== END TWELVE-FACTOR UTILITIES ====================
+def prepare_manual_booking_mode(booking_date_time_str, booking_date_override=None, booking_time_override=None):
+    """
+    Prepare single booking for manual mode.
+
+    Args:
+        booking_date_time_str: BOOKING_DATE_TIME environment variable
+        booking_date_override: Optional booking date from command-line
+        booking_time_override: Optional booking time from command-line
+
+    Returns:
+        tuple: (to_book_list, booking_date) or None on error
+        - to_book_list: List with single (None, time_str) tuple
+        - booking_date: Date to book
+    """
+    try:
+        parts = booking_date_time_str.rsplit(' ', 2)
+        if len(parts) == 3:
+            date_part = parts[0]  # MM/DD/YYYY
+            time_part = f"{parts[1]} {parts[2]}"  # HH:MM AM/PM
+            booking_date = booking_date_override or date_part
+            booking_time = booking_time_override or time_part
+            print(f"Using BOOKING_DATE_TIME: {booking_date_time_str}")
+        else:
+            raise ValueError("Invalid format - expected 'MM/DD/YYYY HH:MM AM/PM'")
+    except Exception as e:
+        print(f"[ERROR] Failed to parse BOOKING_DATE_TIME '{booking_date_time_str}': {e}")
+        print("[ERROR] Please set BOOKING_DATE_TIME in format: MM/DD/YYYY HH:MM AM/PM")
+        return None
+
+    to_book_list = [(None, booking_time)]
+
+    print(f"Booking: {booking_date} at {booking_time}")
+
+    return (to_book_list, booking_date)
+
+
+async def prepare_bookings(booking_date=None, booking_time=None, invoke_time=None, court_name=None, booking_duration=None):
+    """
+    Main wrapper function to prepare bookings for either list mode or manual mode.
+
+    Determines which mode to use based on environment variables and command-line arguments,
+    then prepares the booking list accordingly.
+
+    Args:
+        booking_date: Optional booking date from command-line
+        booking_time: Optional booking time from command-line
+        invoke_time: Optional invoke timestamp for scheduled runs
+        court_name: Optional court name for display
+        booking_duration: Optional duration for display
+
+    Returns:
+        tuple: (to_book_list, booking_date, target_time_str) or None on error
+        - to_book_list: List of (day_of_week, time_str) tuples to book
+        - booking_date: Date to book (MM/DD/YYYY format)
+        - target_time_str: Target time string (HH:MM:SS) or None if no wait needed
+    """
+    BOOKING_LIST = os.getenv('BOOKING_LIST', '')
+    BOOKING_TARGET_TIME = os.getenv('BOOKING_TARGET_TIME', '00:00:15')
+    BOOKING_DATE_TIME = os.getenv('BOOKING_DATE_TIME', '01/20/2026 10:00 AM')
+
+    # If --booking-date-time was passed via command-line, always use Manual Single Booking Mode
+    # regardless of whether BOOKING_LIST exists
+    if BOOKING_LIST and not (booking_date or booking_time):
+        print("\n=== BOOKING LIST MODE ===")
+
+        result = prepare_booking_list_mode(
+            BOOKING_LIST,
+            invoke_time,
+            BOOKING_TARGET_TIME
+        )
+
+        if result is None:
+            return None
+
+        to_book_list, booking_date_final = result
+
+        # Return target time string only for scheduled runs with invoke_time
+        # Main function will decide whether to wait based on invoke_time
+        return (to_book_list, booking_date_final, BOOKING_TARGET_TIME)
+
+    else:
+        print("\n=== MANUAL SINGLE BOOKING MODE ===")
+
+        result = prepare_manual_booking_mode(
+            BOOKING_DATE_TIME,
+            booking_date,
+            booking_time
+        )
+
+        if result is None:
+            return None
+
+        to_book_list, booking_date_final = result
+
+        print(f"Court: {court_name}")
+        print(f"Duration: {booking_duration} minutes")
+
+        return (to_book_list, booking_date_final, None)  # No wait needed for manual mode
 
 
 class AthenaeumBooking:
@@ -1136,20 +1264,27 @@ def get_booking_list(booking_list_str, invoke_datetime):
     return to_book_list
 
 
-async def wait_until_booking_time(target_hour=0, target_minute=0, target_second=15, timezone_name='America/Los_Angeles', grace_period_minutes=10):
+async def wait_until_booking_time(target_time_str='00:00:15', timezone_name='America/Los_Angeles', grace_period_minutes=10):
     """
     Wait until the specified time in PST/PDT timezone.
     If already past target time but within grace period, book immediately.
     Otherwise, wait until target time tomorrow.
 
     Args:
-        target_hour: Hour to wait for (0-23), default 0 for midnight
-        target_minute: Minute to wait for (0-59), default 0
-        target_minute: Minute to wait for (0-59), default 0
-        target_second: Second to wait for (0-59), default 15
+        target_time_str: Target time in HH:MM:SS format (24-hour), default '00:00:15' for 12:00:15 AM
         timezone_name: Timezone string, default 'America/Los_Angeles' for PST/PDT
         grace_period_minutes: If past target time by this many minutes or less, book immediately. Default 10 minutes.
     """
+    # Parse target time string
+    try:
+        time_parts = target_time_str.split(':')
+        target_hour = int(time_parts[0])
+        target_minute = int(time_parts[1])
+        target_second = int(time_parts[2])
+    except (ValueError, IndexError):
+        print(f"\n! Invalid target_time_str format: '{target_time_str}', using default 00:00:15")
+        target_hour, target_minute, target_second = 0, 0, 15
+
     # Get the timezone
     target_tz = pytz.timezone(timezone_name)
 
@@ -1279,147 +1414,41 @@ def send_email_notification(subject, body_html, booking_summary, screenshot_file
 
 
 async def main(booking_date=None, booking_time=None, court_name=None, booking_duration=None, invoke_time=None):
-    # ==================== TWELVE-FACTOR CONFIGURATION ====================
-    # Validate all environment variables at startup (fail fast)
-    config = validate_config()
+    # ==================== CONFIGURATION ====================
+    # Load credentials from environment variables
+    ATHENAEUM_USERNAME = os.getenv('ATHENAEUM_USERNAME')
+    ATHENAEUM_PASSWORD = os.getenv('ATHENAEUM_PASSWORD')
 
-    ATHENAEUM_USERNAME = config['ATHENAEUM_USERNAME']
-    ATHENAEUM_PASSWORD = config['ATHENAEUM_PASSWORD']
+    if not ATHENAEUM_USERNAME or not ATHENAEUM_PASSWORD:
+        print("ERROR: Missing credentials!")
+        print("Please set environment variables in your .env file")
+        return
 
     # Safety mode - set to False to actually complete the booking
-    SAFETY_MODE = config['SAFETY_MODE'].lower() != 'false'
+    SAFETY_MODE = os.getenv('SAFETY_MODE', 'True').lower() != 'false'
 
     # Run in headless mode (False = show browser window)
-    HEADLESS = config['HEADLESS'].lower() == 'true'
+    HEADLESS = os.getenv('HEADLESS', 'False').lower() == 'true'
 
     # Court options:
     #   'North Pickleball Court'
     #   'South Pickleball Court'
     #   'West Tennis Court'
     #   'East Tennis Court'
-    COURT_NAME = court_name or config['COURT_NAME']
+    COURT_NAME = court_name or os.getenv('COURT_NAME', 'North Pickleball Court')
 
     # Duration in minutes: 60 or 120
-    BOOKING_DURATION = booking_duration or config['BOOKING_DURATION']
-
-    # Target booking time (for waiting in Booking List Mode)
-    # Format: HH:MM:SS (24-hour format), e.g., "00:00:15" for 12:00:15 AM
-    BOOKING_TARGET_TIME = config['BOOKING_TARGET_TIME']
+    BOOKING_DURATION = booking_duration or os.getenv('BOOKING_DURATION', '120')
 
     # =======================================================
-    # TWO MODES: Booking List Mode vs. Manual Single Booking Mode
+    # PREPARE BOOKINGS (List Mode or Manual Mode)
     # =======================================================
 
-    # Check if BOOKING_LIST is set (Booking List Mode)
-    BOOKING_LIST = config['BOOKING_LIST']
+    result = await prepare_bookings(booking_date, booking_time, invoke_time, COURT_NAME, BOOKING_DURATION)
+    if result is None:
+        return
 
-    # If --booking-date-time was passed via command-line, always use Manual Single Booking Mode
-    # regardless of whether BOOKING_LIST exists
-    if BOOKING_LIST and not (booking_date or booking_time):
-        print("\n=== BOOKING LIST MODE ===")
-
-        # Determine the reference datetime for day-of-week matching
-        if invoke_time:
-            print(f"Script invoked at: {invoke_time} PST/PDT")
-            # Parse invoke_time (format: "MM-DD-YYYY HH:MM:SS" in PST/PDT timezone)
-            try:
-                # Parse the timestamp string
-                invoke_datetime_naive = datetime.strptime(invoke_time, "%m-%d-%Y %H:%M:%S")
-
-                # Localize it to PST/PDT timezone
-                pst_tz = pytz.timezone('America/Los_Angeles')
-                invoke_datetime_pst = pst_tz.localize(invoke_datetime_naive)
-
-                print(f"Processing with PST/PDT time: {invoke_datetime_pst.strftime('%m/%d/%Y %H:%M:%S %Z')}")
-            except Exception as e:
-                print(f"ERROR: Failed to parse invoke_time '{invoke_time}': {e}")
-                return
-        else:
-            # No invoke_time provided - use current PST time
-            print("No invoke_time provided, using current PST time")
-            pst_tz = pytz.timezone('America/Los_Angeles')
-            invoke_datetime_pst = datetime.now(pst_tz)
-            print(f"Current PST time: {invoke_datetime_pst.strftime('%m/%d/%Y %H:%M:%S %Z')}")
-
-        print(f"BOOKING_LIST: {BOOKING_LIST}")
-
-        # Get list of bookings for today's day of week
-        to_book_list = get_booking_list(BOOKING_LIST, invoke_datetime_pst)
-
-        if not to_book_list:
-            print("\n[INFO] No bookings scheduled for today. Exiting.")
-            return
-
-        print(f"\n=== Bookings to make today ===")
-        for idx, (day_of_week, time_str) in enumerate(to_book_list, 1):
-            print(f"  {idx}. {time_str}")
-
-        # Only wait if invoke_time was provided (scheduled GitHub Actions run)
-        if invoke_time:
-            # Parse BOOKING_TARGET_TIME (format: HH:MM:SS)
-            try:
-                time_parts = BOOKING_TARGET_TIME.split(':')
-                target_hour = int(time_parts[0])
-                target_minute = int(time_parts[1])
-                target_second = int(time_parts[2])
-                print(f"\nTarget booking time: {target_hour:02d}:{target_minute:02d}:{target_second:02d} PST")
-            except (ValueError, IndexError) as e:
-                print(f"\n! Invalid BOOKING_TARGET_TIME format: '{BOOKING_TARGET_TIME}', using default 00:00:15")
-                target_hour, target_minute, target_second = 0, 0, 15
-
-            # Wait until target time PST before proceeding
-            await wait_until_booking_time(target_hour=target_hour, target_minute=target_minute, target_second=target_second)
-        else:
-            print("\n[INFO] No invoke_time provided - booking immediately without waiting")
-
-        # Calculate booking date: 7 days from TARGET BOOKING TIME (not invoke time)
-        # Courts are released at 12:00:15 AM for 7 days ahead, so we book from that timestamp
-        pst_tz = pytz.timezone('America/Los_Angeles')
-        now_pst = datetime.now(pst_tz)
-        target_booking_datetime = now_pst.replace(hour=target_hour, minute=target_minute, second=target_second, microsecond=0)
-
-        # If target time is in the past (e.g., it's 12:05 AM and target was 12:00 AM), it's still "today"
-        # If target time is in the future (e.g., it's 11:50 PM and target is 12:00 AM), add a day
-        if target_booking_datetime < now_pst and (now_pst - target_booking_datetime).total_seconds() > 12 * 3600:
-            # More than 12 hours ago means target is tomorrow (midnight boundary)
-            target_booking_datetime = target_booking_datetime + timedelta(days=1)
-        elif target_booking_datetime > now_pst:
-            # Target is in the future (not yet reached)
-            # This is the normal case for 11:50 PM runs - target is 12:00:15 AM "tomorrow"
-            pass  # target_booking_datetime is already correct
-
-        booking_date_obj = target_booking_datetime + timedelta(days=7)
-        BOOKING_DATE = booking_date_obj.strftime('%m/%d/%Y')
-        print(f"\nTarget booking time: {target_booking_datetime.strftime('%m/%d/%Y %I:%M:%S %p %Z')}")
-        print(f"Booking date (7 days from target): {BOOKING_DATE}")
-
-    else:
-        print("\n=== MANUAL SINGLE BOOKING MODE ===")
-        # Manual booking mode with explicit parameters
-        # Parse BOOKING_DATE_TIME format: "MM/DD/YYYY HH:MM AM/PM"
-        booking_date_time_str = config['BOOKING_DATE_TIME']
-
-        try:
-            # Split into date and time parts
-            parts = booking_date_time_str.rsplit(' ', 2)  # Split from right to get AM/PM
-            if len(parts) == 3:
-                date_part = parts[0]  # MM/DD/YYYY
-                time_part = f"{parts[1]} {parts[2]}"  # HH:MM AM/PM
-                BOOKING_DATE = booking_date or date_part
-                BOOKING_TIME = booking_time or time_part
-                print(f"Using BOOKING_DATE_TIME: {booking_date_time_str}")
-            else:
-                raise ValueError("Invalid format - expected 'MM/DD/YYYY HH:MM AM/PM'")
-        except Exception as e:
-            print(f"[ERROR] Failed to parse BOOKING_DATE_TIME '{booking_date_time_str}': {e}")
-            print("[ERROR] Please set BOOKING_DATE_TIME in format: MM/DD/YYYY HH:MM AM/PM")
-            return
-
-        to_book_list = [(None, BOOKING_TIME)]  # Single booking
-
-        print(f"Booking: {BOOKING_DATE} at {BOOKING_TIME}")
-        print(f"Court: {COURT_NAME}")
-        print(f"Duration: {BOOKING_DURATION} minutes")
+    to_book_list, BOOKING_DATE, target_time_str = result
 
     # =======================================================
     # START BOOKING PROCESS
@@ -1445,6 +1474,15 @@ async def main(booking_date=None, booking_time=None, court_name=None, booking_du
         if not found_booking:
             print("[ERROR] Could not automatically locate booking page")
             return
+
+        # Wait until target booking time (if scheduled run with invoke_time) AFTER navigation
+        # This ensures we're ready to click "Book" exactly when courts are released
+        if invoke_time and target_time_str is not None:
+            print(f"\n[OPTIMIZED TIMING] Waiting until {target_time_str} PST before booking...")
+            await wait_until_booking_time(target_time_str=target_time_str)
+            print("[SUCCESS] Target time reached! Starting bookings immediately...")
+        elif not invoke_time:
+            print("\n[INFO] No invoke_time - booking immediately without waiting")
 
         # Book all courts in the to_book_list
         print(f"\n=== Starting booking process ===")
