@@ -112,7 +112,7 @@ def prepare_booking_list_mode(booking_list_str, invoke_time, target_time_str):
     target_booking_datetime = reference_time.replace(hour=target_hour, minute=target_minute, second=target_second, microsecond=0)
 
     # Handle midnight boundary: if target time is earlier than reference time by more than 12 hours,
-    # it means target is tomorrow (e.g., 11:56 PM → 12:00:15 AM next day)
+    # it means target is tomorrow (e.g., 11:56 PM -> 12:00:15 AM next day)
     if target_booking_datetime < reference_time and (reference_time - target_booking_datetime).total_seconds() > 12 * 3600:
         target_booking_datetime = target_booking_datetime + timedelta(days=1)
     elif target_booking_datetime > reference_time:
@@ -1196,22 +1196,22 @@ class AthenaeumBooking:
         log("Browser closed", 'INFO')
 
 
-def get_booking_list(booking_list_str, invoke_datetime):
+def get_booking_list(booking_list_str, booking_datetime):
     """
-    Parse BOOKING_LIST and filter bookings for today's day of week.
+    Parse BOOKING_LIST and filter bookings for the target booking day's day of week.
 
     Args:
         booking_list_str: String like "Tuesday 7:00 PM|Both,Wednesday 7:00 PM,Friday 4:00 PM|North Pickleball Court"
                          Format: <DayName> <Time>|<CourtName>, comma-separated
                          Court specification is optional (defaults to None)
-        invoke_datetime: datetime object representing when the script was invoked
+        booking_datetime: datetime object representing the actual booking date (7 days from target time)
 
     Returns:
         List of tuples: [(day_name, time_str, court_name), ...]
         court_name will be None if not specified
 
     Example:
-        If today is Tuesday and booking_list has "Tuesday 7:00 PM|Both,Wednesday 7:00 PM"
+        If booking_datetime is Tuesday and booking_list has "Tuesday 7:00 PM|Both,Wednesday 7:00 PM"
         Returns: [("Tuesday", "7:00 PM", "Both")]
     """
     if not booking_list_str:
@@ -1230,11 +1230,11 @@ def get_booking_list(booking_list_str, invoke_datetime):
 
     day_names_display = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
-    # Get the day of week from invoke_datetime
-    python_weekday = invoke_datetime.weekday()  # 0=Mon, 6=Sun
-    today_name = day_names_display[python_weekday]
+    # Get the day of week from booking_datetime (7 days from target time)
+    python_weekday = booking_datetime.weekday()  # 0=Mon, 6=Sun
+    target_day_name = day_names_display[python_weekday]
 
-    log(f"\nProcessing BOOKING_LIST for day of week: {today_name}", 'INFO')
+    log(f"\nProcessing BOOKING_LIST for day of week: {target_day_name}", 'INFO')
 
     to_book_list = []
 
@@ -1623,15 +1623,15 @@ async def main(booking_date=None, booking_time=None, court_name=None, booking_du
 
         # Generate HTML email body
         if successful_bookings > 0 and failed_bookings == 0:
-            status_icon = "✅"
+            status_icon = "[OK]"
             status_text = "All Bookings Successful"
             status_color = "#28a745"
         elif successful_bookings > 0 and failed_bookings > 0:
-            status_icon = "⚠️"
+            status_icon = "[WARN]"
             status_text = "Partial Success"
             status_color = "#ffc107"
         else:
-            status_icon = "❌"
+            status_icon = "[ERROR]"
             status_text = "All Bookings Failed"
             status_color = "#dc3545"
 
@@ -1665,8 +1665,8 @@ async def main(booking_date=None, booking_time=None, court_name=None, booking_du
                 <p><strong>Timestamp:</strong> {booking_summary['timestamp']}</p>
                 <p><strong>Booking Date:</strong> {BOOKING_DATE}</p>
                 <p><strong>Total Attempts:</strong> {total_attempts}</p>
-                <p><strong>✅ Successful:</strong> {successful_bookings}</p>
-                <p><strong>❌ Failed:</strong> {failed_bookings}</p>
+                <p><strong>[OK] Successful:</strong> {successful_bookings}</p>
+                <p><strong>[ERROR] Failed:</strong> {failed_bookings}</p>
             </div>
 
             <h2>Booking Details</h2>
@@ -1676,13 +1676,13 @@ async def main(booking_date=None, booking_time=None, court_name=None, booking_du
         for detail in booking_details:
             status_class = detail['status']
             if detail['status'] == 'success':
-                icon = "✅"
+                icon = "[OK]"
                 status_label = "SUCCESS"
             elif detail['status'] == 'failed':
-                icon = "⚠️"
+                icon = "[WARN]"
                 status_label = "FAILED"
             else:
-                icon = "❌"
+                icon = "[ERROR]"
                 status_label = "ERROR"
 
             email_body += f"""
