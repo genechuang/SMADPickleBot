@@ -62,6 +62,7 @@ except ImportError:
 GREENAPI_INSTANCE_ID = os.environ.get('GREENAPI_INSTANCE_ID', '')
 GREENAPI_API_TOKEN = os.environ.get('GREENAPI_API_TOKEN', '')
 SMAD_GROUP_ID = os.environ.get('SMAD_WHATSAPP_GROUP_ID', '')  # Format: 123456789@g.us
+SMAD_GROUP_URL = os.environ.get('SMAD_WHATSAPP_GROUP_URL', '')  # Group invite link
 
 # Configuration - Google Sheets (reuse from smad-sheets.py)
 SPREADSHEET_ID = os.environ.get('SMAD_SPREADSHEET_ID', '1w4_-hnykYgcs6nyyDkie9CwBRwri7aJUblD2mxgNUHY')
@@ -94,6 +95,9 @@ FIRESTORE_COLLECTION = 'smad_polls'
 
 # Configuration - Poll tracking (for legacy poll before webhook was set up)
 POLL_CREATED_DATE = os.environ.get('POLL_CREATED_DATE', '')  # Format: M/DD/YY
+
+# Bot signature for all WhatsApp messages
+PICKLEBOT_SIGNATURE = "Picklebot🥒🏓🤖"
 
 # Firestore client (lazy initialization)
 _firestore_client = None
@@ -360,16 +364,12 @@ def send_balance_dm(wa_client, player: Dict, dry_run: bool = False) -> bool:
         last_game_text = "Your last game played was in 2025."
 
     message = f"""Hi {player['first_name']}!
-
 This is a friendly reminder that you have an outstanding balance with SMAD Pickleball:
-
 *Balance Due: ${player['balance']:.2f}*
-
 {last_game_text}
-
 Please send payment via Venmo to @gene-chuang or Zelle to genechuang@gmail.com at your earliest convenience.
-
-Thanks for playing! 🏓"""
+Thanks,
+{PICKLEBOT_SIGNATURE}"""
 
     if dry_run:
         print(f"  [DRY RUN] Would send to {player['name']} ({phone_id}):")
@@ -399,17 +399,17 @@ def send_balance_summary_to_group(wa_client, players: List[Dict], dry_run: bool 
     players_with_balance = [p for p in players if p['balance'] > 0]
 
     if not players_with_balance:
-        message = "🏓 *SMAD Pickleball Balance Update*\n\nNo outstanding balances! Everyone is paid up! 🎉"
+        message = f"*SMAD Pickleball Balance Update*\n\nNo outstanding balances! Everyone is paid up!\n\n{PICKLEBOT_SIGNATURE}"
     else:
         total = sum(p['balance'] for p in players_with_balance)
-        message = f"🏓 *SMAD Pickleball Balance Update*\n\n"
+        message = f"*SMAD Pickleball Balance Update*\n\n"
         message += f"*{len(players_with_balance)} players with outstanding balances:*\n\n"
 
         for player in sorted(players_with_balance, key=lambda x: x['balance'], reverse=True):
             message += f"• {player['name']}: ${player['balance']:.2f}\n"
 
         message += f"\n*Total Outstanding: ${total:.2f}*\n\n"
-        message += "Please send payment via Venmo to @gene-chuang or Zelle to genechuang@gmail.com."
+        message += f"Please send payment via Venmo to @gene-chuang or Zelle to genechuang@gmail.com.\n\n{PICKLEBOT_SIGNATURE}"
 
     if dry_run:
         print(f"[DRY RUN] Would send to group ({SMAD_GROUP_ID}):")
@@ -461,7 +461,7 @@ def create_availability_poll(wa_client, dry_run: bool = False) -> bool:
     # Add "Can't play this week" option
     options.append({"optionName": "Can't play this week"})
 
-    poll_question = "🥒🏓🤖 When can you play pickleball this week? (Select all that apply)"
+    poll_question = f"When can you play pickleball this week? {PICKLEBOT_SIGNATURE}"
 
     if dry_run:
         print(f"[DRY RUN] Would create poll in group ({SMAD_GROUP_ID}):")
@@ -1062,13 +1062,13 @@ def send_vote_reminders(wa_client, players: List[Dict], dry_run: bool = False) -
             print(f"  [SKIP] {player['name']} - no valid phone number")
             continue
 
-        message = f"""Hi {player['first_name']}! 🥒
-
-This is a friendly reminder to vote in this week's SMAD pickleball availability poll.
-
-Please open the SMAD WhatsApp group and vote so I can plan the games for this week.
-
-Thanks! 🏓🤖"""
+        # Build message with optional group link
+        group_link_text = f"\n\n{SMAD_GROUP_URL}" if SMAD_GROUP_URL else ""
+        message = f"""Hi {player['first_name']}!
+This is a friendly reminder to vote in this week's SMAD pickleball availability poll so I can plan the games for this week.
+The latest poll is pinned in the SMAD Pickleball group: {group_link_text}
+Thanks,
+{PICKLEBOT_SIGNATURE}"""
 
         if dry_run:
             last_voted_str = player.get('last_voted', 'never')
@@ -1090,6 +1090,71 @@ Thanks! 🏓🤖"""
     return sent
 
 
+def send_group_vote_reminder(wa_client, players: List[Dict], dry_run: bool = False) -> bool:
+    """
+    Send a vote reminder to the group listing players who haven't voted.
+
+    This is an alternative to individual DMs when the GREEN-API quota is exceeded.
+    Posts a message to the group with names of players who need to vote.
+
+    Returns:
+        True if message sent successfully.
+    """
+    if not SMAD_GROUP_ID:
+        print("ERROR: SMAD_WHATSAPP_GROUP_ID not configured.")
+        return False
+
+    poll_created = get_poll_created_date()
+    if not poll_created:
+        print("ERROR: Could not determine poll creation date.")
+        print("Make sure there's a poll in Firestore or POLL_CREATED_DATE is set.")
+        return False
+
+    # Find players who haven't voted (Last Voted < poll created date, or empty)
+    not_voted = []
+    for player in players:
+        last_voted_str = player.get('last_voted', '')
+        last_voted = parse_date_string(last_voted_str)
+
+        if last_voted is None or last_voted < poll_created:
+            not_voted.append(player)
+
+    if not not_voted:
+        print("Everyone has voted! No reminder needed.")
+        return True
+
+    # Build the group message with bold names for visibility
+    names = [f"*{p['first_name']}*" for p in not_voted]
+    names_list = ", ".join(names)
+
+    message = f"""*Vote Reminder*
+
+The following {len(not_voted)} players haven't voted in this week's poll yet:
+
+{names_list}
+
+Please vote in the pinned poll so I can plan the games for this week!
+
+{PICKLEBOT_SIGNATURE}"""
+
+    if dry_run:
+        print(f"[DRY RUN] Would send to group ({SMAD_GROUP_ID}):")
+        print(message)
+        return True
+
+    try:
+        response = wa_client.sending.sendMessage(SMAD_GROUP_ID, message)
+        if response.code == 200:
+            print(f"[OK] Vote reminder sent to group ({len(not_voted)} players listed)")
+            return True
+        else:
+            print(f"[ERROR] Failed to send to group: {response.data}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] Failed to send to group: {e}")
+        return False
+
+
 def cmd_show_votes(args):
     """Command: Show poll votes from Firestore."""
     sheets = get_sheets_service()
@@ -1104,6 +1169,15 @@ def cmd_send_vote_reminders(args):
     players = get_player_data(sheets)
 
     send_vote_reminders(wa_client, players, dry_run=args.dry_run)
+
+
+def cmd_send_group_vote_reminder(args):
+    """Command: Send a vote reminder to the group listing non-voters."""
+    wa_client = get_whatsapp_client()
+    sheets = get_sheets_service()
+    players = get_player_data(sheets)
+
+    send_group_vote_reminder(wa_client, players, dry_run=args.dry_run)
 
 
 def cmd_show_poll(args):
@@ -1199,6 +1273,7 @@ Examples:
   %(prog)s show-poll                        Show the most recent poll (from WhatsApp)
   %(prog)s show-votes                       Show poll votes (from Firestore webhook)
   %(prog)s send-vote-reminders              Send DM reminders to non-voters
+  %(prog)s send-group-vote-reminder         Post vote reminder to group (lists non-voters)
   %(prog)s send-balance-dm "John Doe"       Send balance reminder to John
   %(prog)s send-balance-dm all              Send reminders to all with balances
   %(prog)s send-balance-summary             Post balance summary to group
@@ -1268,6 +1343,11 @@ Environment variables:
     vote_reminder_parser.add_argument('--poll-id', dest='poll_id',
                                        help='Specific poll ID (default: most recent)')
     vote_reminder_parser.set_defaults(func=cmd_send_vote_reminders)
+
+    # send-group-vote-reminder
+    group_vote_reminder_parser = subparsers.add_parser('send-group-vote-reminder',
+                                                        help='Post vote reminder to group listing non-voters')
+    group_vote_reminder_parser.set_defaults(func=cmd_send_group_vote_reminder)
 
     # list-group-members
     members_parser = subparsers.add_parser('list-group-members',
