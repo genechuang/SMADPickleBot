@@ -96,6 +96,9 @@ FIRESTORE_COLLECTION = 'smad_polls'
 # Configuration - Poll tracking (for legacy poll before webhook was set up)
 POLL_CREATED_DATE = os.environ.get('POLL_CREATED_DATE', '')  # Format: M/DD/YY
 
+# Configuration - Booking list (for poll options)
+BOOKING_LIST = os.environ.get('BOOKING_LIST', '')  # Format: Monday 7:00 PM|Both,Tuesday 7:00 PM|Both,...
+
 # Bot signature for all WhatsApp messages
 PICKLEBOT_SIGNATURE = "Picklebot🥒🏓🤖"
 
@@ -429,34 +432,152 @@ def send_balance_summary_to_group(wa_client, players: List[Dict], dry_run: bool 
         return False
 
 
+def parse_booking_list() -> List[Dict]:
+    """
+    Parse BOOKING_LIST env var into a list of booking configs.
+
+    Format: "Monday 7:00 PM|Both,Tuesday 7:00 PM|Both,..."
+
+    Returns list of dicts with 'day', 'time', 'court' keys.
+    """
+    if not BOOKING_LIST:
+        return []
+
+    bookings = []
+    for entry in BOOKING_LIST.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+
+        # Split by | to get court info (optional)
+        parts = entry.split('|')
+        day_time = parts[0].strip()
+        court = parts[1].strip() if len(parts) > 1 else 'Both'
+
+        # Parse day and time (e.g., "Monday 7:00 PM")
+        day_time_parts = day_time.split(' ', 1)
+        if len(day_time_parts) >= 2:
+            day = day_time_parts[0]
+            time = day_time_parts[1]
+            bookings.append({
+                'day': day,
+                'time': time,
+                'court': court
+            })
+
+    return bookings
+
+
+def format_time_for_poll(time_str: str, duration_hours: int = 2) -> str:
+    """
+    Convert time like "7:00 PM" to poll format like "7pm-9pm".
+
+    Args:
+        time_str: Time string like "7:00 PM" or "10:00 AM"
+        duration_hours: Duration in hours (default 2)
+
+    Returns:
+        Formatted string like "7pm-9pm" or "10am-12pm"
+    """
+    try:
+        # Parse the time
+        time_obj = datetime.strptime(time_str.strip(), "%I:%M %p")
+        start_hour = time_obj.hour
+        end_hour = start_hour + duration_hours
+
+        # Format start time
+        if start_hour == 0:
+            start_str = "12am"
+        elif start_hour < 12:
+            start_str = f"{start_hour}am"
+        elif start_hour == 12:
+            start_str = "12pm"
+        else:
+            start_str = f"{start_hour - 12}pm"
+
+        # Format end time
+        if end_hour == 0 or end_hour == 24:
+            end_str = "12am"
+        elif end_hour < 12:
+            end_str = f"{end_hour}am"
+        elif end_hour == 12:
+            end_str = "12pm"
+        else:
+            end_str = f"{end_hour - 12}pm"
+
+        return f"{start_str}-{end_str}"
+    except ValueError:
+        # If parsing fails, return original
+        return time_str
+
+
+def get_day_abbreviation(day_name: str) -> str:
+    """Convert full day name to abbreviation for poll."""
+    abbreviations = {
+        'monday': 'Mon',
+        'tuesday': 'Tues',
+        'wednesday': 'Wed',
+        'thursday': 'Thurs',
+        'friday': 'Fri',
+        'saturday': 'Sat',
+        'sunday': 'Sun'
+    }
+    return abbreviations.get(day_name.lower(), day_name[:3])
+
+
+def get_weekday_number(day_name: str) -> int:
+    """Convert day name to weekday number (Monday=0, Sunday=6)."""
+    days = {
+        'monday': 0,
+        'tuesday': 1,
+        'wednesday': 2,
+        'thursday': 3,
+        'friday': 4,
+        'saturday': 5,
+        'sunday': 6
+    }
+    return days.get(day_name.lower(), -1)
+
+
 def create_availability_poll(wa_client, dry_run: bool = False) -> bool:
     """Create a poll in the group asking about availability for upcoming games."""
     if not SMAD_GROUP_ID:
         print("ERROR: SMAD_WHATSAPP_GROUP_ID not configured.")
         return False
 
-    # Generate time slot options for the upcoming week
+    # Parse booking list from env
+    bookings = parse_booking_list()
+
+    if not bookings:
+        print("ERROR: BOOKING_LIST not configured or empty.")
+        print("Set BOOKING_LIST in .env (e.g., 'Monday 7:00 PM|Both,Tuesday 7:00 PM|Both')")
+        return False
+
+    # Generate time slot options for the upcoming week based on BOOKING_LIST
     today = datetime.now()
     options = []
 
-    # Find next Tuesday, Wednesday, Friday, Saturday, Sunday with time slots
-    days_of_interest = {
-        1: ("Tues", "7pm-9pm"),   # Tuesday
-        2: ("Wed", "7pm-9pm"),    # Wednesday
-        4: ("Fri", "7pm-9pm"),    # Friday
-        5: ("Sat", "10am-12pm"),  # Saturday
-        6: ("Sun", "10am-12pm")   # Sunday
-    }
+    # Build a map of weekday -> list of bookings for that day
+    bookings_by_weekday = {}
+    for booking in bookings:
+        weekday = get_weekday_number(booking['day'])
+        if weekday >= 0:
+            if weekday not in bookings_by_weekday:
+                bookings_by_weekday[weekday] = []
+            bookings_by_weekday[weekday].append(booking)
 
-    for i in range(1, 8):  # Next 7 days
+    # Find the next occurrence of each booking day in the next 7 days
+    for i in range(1, 8):
         future_date = today + timedelta(days=i)
         weekday = future_date.weekday()
 
-        if weekday in days_of_interest:
-            day_abbrev, time_slot = days_of_interest[weekday]
-            year_short = future_date.year % 100
-            date_str = f"{day_abbrev} {future_date.month}/{future_date.day}/{year_short} {time_slot}"
-            options.append({"optionName": date_str})
+        if weekday in bookings_by_weekday:
+            for booking in bookings_by_weekday[weekday]:
+                day_abbrev = get_day_abbreviation(booking['day'])
+                time_slot = format_time_for_poll(booking['time'])
+                year_short = future_date.year % 100
+                date_str = f"{day_abbrev} {future_date.month}/{future_date.day}/{year_short} {time_slot}"
+                options.append({"optionName": date_str})
 
     # Add "Can't play this week" option
     options.append({"optionName": "Can't play this week"})
