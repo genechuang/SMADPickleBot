@@ -1,5 +1,8 @@
-# Environment variables (NEVER commit this!)
+# Environment variables and credentials (NEVER commit these!)
 .env
+smad-credentials.json
+*-credentials.json
+*.json.key
 
 # Python
 venv/

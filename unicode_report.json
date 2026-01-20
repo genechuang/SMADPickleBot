@@ -1,0 +1,51 @@
+{
+  "total": 5,
+  "characters": [
+    {
+      "unicode_value": "U+2192",
+      "decimal": 8594,
+      "occurrences": 1,
+      "lines": [
+        115
+      ]
+    },
+    {
+      "unicode_value": "U+2705",
+      "decimal": 9989,
+      "occurrences": 3,
+      "lines": [
+        1626,
+        1668,
+        1679
+      ]
+    },
+    {
+      "unicode_value": "U+26A0",
+      "decimal": 9888,
+      "occurrences": 2,
+      "lines": [
+        1630,
+        1682
+      ]
+    },
+    {
+      "unicode_value": "U+FE0F",
+      "decimal": 65039,
+      "occurrences": 2,
+      "lines": [
+        1630,
+        1682
+      ]
+    },
+    {
+      "unicode_value": "U+274C",
+      "decimal": 10060,
+      "occurrences": 3,
+      "lines": [
+        1634,
+        1669,
+        1685
+      ]
+    }
+  ]
+}
