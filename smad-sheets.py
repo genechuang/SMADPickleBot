@@ -54,23 +54,30 @@ HOURLY_RATE = float(os.environ.get('SMAD_HOURLY_RATE', '4.0'))
 # Email configuration is now handled by email_service.py
 # Uses GMAIL_USERNAME, GMAIL_APP_PASSWORD, NOTIFICATION_EMAIL environment variables
 
-# Column indices (0-based)
-# Columns: First Name, Last Name, Email, Mobile, Venmo, Zelle, Balance, Paid, 2025 Balance, Invoiced, 2026 Hours, 2025 Hours, Last Paid, Last Voted, [dates...]
+# Column indices (0-based) - SINGLE SOURCE OF TRUTH
+# Other files (smad-whatsapp.py, payments-management.py) import these from here
+# Columns: First Name, Last Name, Vacation, Email, Mobile, Venmo, Zelle, Balance, Paid, Invoiced, 2026 Hours, Last Paid, Last Voted, [dates...]
 COL_FIRST_NAME = 0
 COL_LAST_NAME = 1
-COL_EMAIL = 2
-COL_MOBILE = 3
-COL_VENMO = 4
-COL_ZELLE = 5
-COL_BALANCE = 6
-COL_PAID = 7
-COL_2025_BALANCE = 8
+COL_VACATION = 2
+COL_EMAIL = 3
+COL_MOBILE = 4
+COL_VENMO = 5
+COL_ZELLE = 6
+COL_BALANCE = 7
+COL_PAID = 8
 COL_INVOICED = 9
 COL_2026_HOURS = 10
-COL_2025_HOURS = 11
-COL_LAST_PAID = 12
-COL_LAST_VOTED = 13  # Last poll vote date
-COL_FIRST_DATE = 14  # Date columns start here (newest first)
+COL_LAST_PAID = 11
+COL_LAST_VOTED = 12  # Last poll vote date
+COL_FIRST_DATE = 13  # Date columns start here (newest first)
+
+# Export all column constants for other modules
+__all__ = [
+    'COL_FIRST_NAME', 'COL_LAST_NAME', 'COL_VACATION', 'COL_EMAIL', 'COL_MOBILE',
+    'COL_VENMO', 'COL_ZELLE', 'COL_BALANCE', 'COL_PAID',
+    'COL_INVOICED', 'COL_2026_HOURS', 'COL_LAST_PAID', 'COL_LAST_VOTED', 'COL_FIRST_DATE'
+]
 
 # Scopes for Google Sheets API
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']

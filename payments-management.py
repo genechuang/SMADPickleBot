@@ -54,22 +54,23 @@ PAYMENT_LOG_SHEET_NAME = os.environ.get('PAYMENT_LOG_SHEET_NAME', 'Payment Log')
 CREDENTIALS_FILE = os.environ.get('GOOGLE_CREDENTIALS_FILE', 'smad-credentials.json')
 VENMO_ACCESS_TOKEN = os.environ.get('VENMO_ACCESS_TOKEN', '')
 
-# Column indices for main sheet (0-based) - must match smad-sheets.py
-# Columns: First Name, Last Name, Email, Mobile, Venmo, Zelle, Balance, Paid, 2025 Balance, Invoiced, 2026 Hours, 2025 Hours, Last Paid, Last Voted, [dates...]
-COL_FIRST_NAME = 0
-COL_LAST_NAME = 1
-COL_EMAIL = 2
-COL_MOBILE = 3
-COL_VENMO = 4
-COL_ZELLE = 5
-COL_BALANCE = 6
-COL_PAID = 7
-COL_2025_BALANCE = 8
-COL_INVOICED = 9
-COL_2026_HOURS = 10
-COL_2025_HOURS = 11
-COL_LAST_PAID = 12
-COL_LAST_VOTED = 13  # Last poll vote date
+# Column indices for main sheet - import from smad-sheets.py (single source of truth)
+import importlib.util
+_spec = importlib.util.spec_from_file_location("smad_sheets", os.path.join(os.path.dirname(__file__), "smad-sheets.py"))
+_smad_sheets = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_smad_sheets)
+COL_FIRST_NAME = _smad_sheets.COL_FIRST_NAME
+COL_LAST_NAME = _smad_sheets.COL_LAST_NAME
+COL_VACATION = _smad_sheets.COL_VACATION
+COL_EMAIL = _smad_sheets.COL_EMAIL
+COL_MOBILE = _smad_sheets.COL_MOBILE
+COL_VENMO = _smad_sheets.COL_VENMO
+COL_ZELLE = _smad_sheets.COL_ZELLE
+COL_BALANCE = _smad_sheets.COL_BALANCE
+COL_PAID = _smad_sheets.COL_PAID
+COL_INVOICED = _smad_sheets.COL_INVOICED
+COL_2026_HOURS = _smad_sheets.COL_2026_HOURS
+COL_LAST_VOTED = _smad_sheets.COL_LAST_VOTED
 
 # Payment Log sheet columns (0-based)
 PL_COL_DATE = 0          # A: Date
@@ -291,7 +292,7 @@ def record_payment(sheets, player_name: str, amount: float, method: str = 'venmo
                 print(f"  - {row[COL_FIRST_NAME]} {row[COL_LAST_NAME]}")
         return False
 
-    row_index, first_name, last_name = player_info
+    _, first_name, last_name = player_info
     full_name = f"{first_name} {last_name}"
 
     # Prepare payment date (MM/DD/YYYY format)
@@ -345,57 +346,7 @@ def record_payment(sheets, player_name: str, amount: float, method: str = 'venmo
         print("ERROR: Failed to append payment to log")
         return False
 
-    # Update Last Paid date in main sheet (only if more recent)
-    should_update_last_paid = True
-    current_last_paid = None
-
-    # Get current Last Paid value from main_data
-    if len(main_data[row_index]) > COL_LAST_PAID:
-        current_last_paid = main_data[row_index][COL_LAST_PAID]
-
-    if current_last_paid:
-        # Parse and compare dates
-        try:
-            # Parse current Last Paid (M/D/YY format)
-            parts = current_last_paid.split('/')
-            if len(parts) == 3:
-                month, day, year = int(parts[0]), int(parts[1]), int(parts[2])
-                if year < 100:
-                    year += 2000
-                current_date = datetime(year, month, day)
-
-                # Parse new payment date
-                new_parts = date_str.split('/')
-                if len(new_parts) == 3:
-                    new_month, new_day, new_year = int(new_parts[0]), int(new_parts[1]), int(new_parts[2])
-                    if new_year < 100:
-                        new_year += 2000
-                    new_date = datetime(new_year, new_month, new_day)
-
-                    # Only update if new date is more recent
-                    if new_date <= current_date:
-                        should_update_last_paid = False
-        except (ValueError, IndexError):
-            # If parsing fails, update anyway
-            pass
-
-    if should_update_last_paid:
-        last_paid_cell = f"{col_index_to_letter(COL_LAST_PAID)}{row_index + 1}"
-        update_result = update_sheet_cell(sheets, MAIN_SHEET_NAME, last_paid_cell, date_str)
-
-        if update_result:
-            # Update the cache so subsequent calls for the same player use the new value
-            while len(main_data[row_index]) <= COL_LAST_PAID:
-                main_data[row_index].append('')
-            main_data[row_index][COL_LAST_PAID] = date_str
-            print(f"[OK] Recorded payment: {full_name} - ${amount:.2f} ({method})")
-            print(f"     Last Paid updated to: {date_str}")
-        else:
-            print(f"[WARN] Payment logged but failed to update Last Paid date")
-    else:
-        print(f"[OK] Recorded payment: {full_name} - ${amount:.2f} ({method})")
-        print(f"     Last Paid not updated (current: {current_last_paid} is more recent than {date_str})")
-
+    print(f"[OK] Recorded payment: {full_name} - ${amount:.2f} ({method})")
     return True
 
 

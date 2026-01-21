@@ -70,21 +70,25 @@ SHEET_NAME = os.environ.get('SMAD_SHEET_NAME', '2026 Pickleball')
 CREDENTIALS_FILE = os.environ.get('GOOGLE_CREDENTIALS_FILE', 'smad-credentials.json')
 HOURLY_RATE = float(os.environ.get('SMAD_HOURLY_RATE', '4.0'))
 
-# Column indices (0-based) - must match smad-sheets.py
-COL_FIRST_NAME = 0
-COL_LAST_NAME = 1
-COL_EMAIL = 2
-COL_MOBILE = 3
-COL_VENMO = 4
-COL_ZELLE = 5
-COL_BALANCE = 6
-COL_PAID = 7
-COL_INVOICED = 8
-COL_2026_HOURS = 9
-COL_2025_HOURS = 10
-COL_LAST_PAID = 11
-COL_LAST_VOTED = 12
-COL_FIRST_DATE = 13
+# Column indices - import from smad-sheets.py (single source of truth)
+import importlib.util
+_spec = importlib.util.spec_from_file_location("smad_sheets", os.path.join(os.path.dirname(__file__), "smad-sheets.py"))
+_smad_sheets = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_smad_sheets)
+COL_FIRST_NAME = _smad_sheets.COL_FIRST_NAME
+COL_LAST_NAME = _smad_sheets.COL_LAST_NAME
+COL_VACATION = _smad_sheets.COL_VACATION
+COL_EMAIL = _smad_sheets.COL_EMAIL
+COL_MOBILE = _smad_sheets.COL_MOBILE
+COL_VENMO = _smad_sheets.COL_VENMO
+COL_ZELLE = _smad_sheets.COL_ZELLE
+COL_BALANCE = _smad_sheets.COL_BALANCE
+COL_PAID = _smad_sheets.COL_PAID
+COL_INVOICED = _smad_sheets.COL_INVOICED
+COL_2026_HOURS = _smad_sheets.COL_2026_HOURS
+COL_LAST_PAID = _smad_sheets.COL_LAST_PAID
+COL_LAST_VOTED = _smad_sheets.COL_LAST_VOTED
+COL_FIRST_DATE = _smad_sheets.COL_FIRST_DATE
 
 # Google Sheets scopes (need write access for updating Last Voted and poll responses)
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
@@ -174,7 +178,7 @@ def get_sheet_data(sheets, range_name: str = None) -> List[List]:
 def add_poll_date_columns(sheets, date_options: List[str]) -> bool:
     """
     Add new date columns to the sheet for poll options.
-    Inserts columns right after COL_LAST_VOTED (column M), newest first.
+    Inserts columns right after COL_LAST_VOTED (column O), newest first.
 
     Args:
         sheets: Google Sheets service
@@ -199,7 +203,7 @@ def add_poll_date_columns(sheets, date_options: List[str]) -> bool:
             print(f"[ERROR] Sheet '{SHEET_NAME}' not found")
             return False
 
-        # Insert columns after COL_LAST_VOTED (index 12 = column M)
+        # Insert columns after COL_LAST_VOTED (index 14 = column O)
         # We need to insert len(date_options) columns at position COL_FIRST_DATE
         num_cols = len(date_options)
 
@@ -326,6 +330,10 @@ def get_player_data(sheets) -> List[Dict]:
                 except ValueError:
                     pass
 
+        # Check vacation status (1 = on vacation)
+        vacation_str = row[COL_VACATION] if len(row) > COL_VACATION else ""
+        on_vacation = vacation_str.strip() == "1"
+
         players.append({
             'first_name': first_name,
             'last_name': last_name,
@@ -338,7 +346,8 @@ def get_player_data(sheets) -> List[Dict]:
             'hours_2026': hours_2026,
             'last_paid': row[COL_LAST_PAID] if len(row) > COL_LAST_PAID else "",
             'last_voted': row[COL_LAST_VOTED] if len(row) > COL_LAST_VOTED else "",
-            'last_game_date': last_game_date
+            'last_game_date': last_game_date,
+            'on_vacation': on_vacation
         })
 
     return players
@@ -367,10 +376,9 @@ def send_balance_dm(wa_client, player: Dict, dry_run: bool = False) -> bool:
         last_game_text = "Your last game played was in 2025."
 
     message = f"""Hi {player['first_name']}!
-This is a friendly reminder that you have an outstanding balance with SMAD Pickleball:
-*Balance Due: ${player['balance']:.2f}*
+You have an outstanding balance with SMAD Pickleball: *${player['balance']:.2f}*
 {last_game_text}
-Please send payment via Venmo to @gene-chuang or Zelle to genechuang@gmail.com at your earliest convenience.
+Please Venmo @gene-chuang or Zelle genechuang@gmail.com
 Thanks,
 {PICKLEBOT_SIGNATURE}"""
 
@@ -1159,8 +1167,15 @@ def send_vote_reminders(wa_client, players: List[Dict], dry_run: bool = False) -
     print(f"\n=== Vote Reminders (Poll created: {poll_created.month}/{poll_created.day}/{poll_created.year % 100}) ===\n")
 
     # Find players who haven't voted (Last Voted < poll created date, or empty)
+    # Skip players on vacation
     not_voted = []
+    vacation_skipped = 0
     for player in players:
+        # Skip players on vacation
+        if player.get('on_vacation', False):
+            vacation_skipped += 1
+            continue
+
         last_voted_str = player.get('last_voted', '')
         last_voted = parse_date_string(last_voted_str)
 
@@ -1169,6 +1184,9 @@ def send_vote_reminders(wa_client, players: List[Dict], dry_run: bool = False) -
         # 2. Last Voted is before poll created date
         if last_voted is None or last_voted < poll_created:
             not_voted.append(player)
+
+    if vacation_skipped > 0:
+        print(f"(Skipped {vacation_skipped} player(s) on vacation)\n")
 
     if not not_voted:
         print("Everyone has voted!")
@@ -1186,7 +1204,7 @@ def send_vote_reminders(wa_client, players: List[Dict], dry_run: bool = False) -
         # Build message with optional group link
         group_link_text = f"\n\n{SMAD_GROUP_URL}" if SMAD_GROUP_URL else ""
         message = f"""Hi {player['first_name']}!
-This is a friendly reminder to vote in this week's SMAD pickleball availability poll so I can plan the games for this week.
+REMINDER: Vote in this week's SMAD pickleball availability poll so Gene can plan the games for this week.
 The latest poll is pinned in the SMAD Pickleball group: {group_link_text}
 Thanks,
 {PICKLEBOT_SIGNATURE}"""
