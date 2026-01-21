@@ -787,6 +787,7 @@ class AthenaeumBooking:
                         log("! Standard dropdown not found, trying Telerik RadComboBox...", 'INFO')
                         try:
                             # Use JavaScript to interact with Telerik RadComboBox
+                            # Note: findItemByText can be unreliable, so we search items manually
                             success = await booking_frame.evaluate(f'''() => {{
                                 // Find the RadComboBox by input ID
                                 const input = document.getElementById('ctl00_ctrl_MakeBookingTime_drpDuration_tCombo_Input');
@@ -796,21 +797,29 @@ class AthenaeumBooking:
                                 const comboId = 'ctl00_ctrl_MakeBookingTime_drpDuration_tCombo';
                                 const combo = window.$find(comboId);
 
-                                if (combo && typeof combo.findItemByText === 'function') {{
-                                    // Try to find and select the item
-                                    const item = combo.findItemByText('{duration_minutes} Minutes');
-                                    if (item) {{
-                                        combo.set_selectedIndex(item.get_index());
-                                        combo.set_text(item.get_text());
-                                        return {{ success: true, method: 'telerik API' }};
-                                    }} else {{
-                                        // List available items for debugging
-                                        const items = combo.get_items();
-                                        const itemTexts = [];
-                                        for (let i = 0; i < items.get_count(); i++) {{
-                                            itemTexts.push(items.getItem(i).get_text());
+                                if (combo && typeof combo.get_items === 'function') {{
+                                    const items = combo.get_items();
+                                    const targetText = '{duration_minutes} Minutes';
+                                    const itemTexts = [];
+                                    let foundIndex = -1;
+
+                                    // Search items manually for more reliable matching
+                                    for (let i = 0; i < items.get_count(); i++) {{
+                                        const itemText = items.getItem(i).get_text();
+                                        itemTexts.push(itemText);
+                                        // Check if this item contains our duration
+                                        if (itemText.includes('{duration_minutes}')) {{
+                                            foundIndex = i;
                                         }}
-                                        return {{ success: false, reason: 'item not found', available: itemTexts }};
+                                    }}
+
+                                    if (foundIndex >= 0) {{
+                                        const item = items.getItem(foundIndex);
+                                        combo.set_selectedIndex(foundIndex);
+                                        combo.set_text(item.get_text());
+                                        return {{ success: true, method: 'telerik API (manual search)', selectedText: item.get_text() }};
+                                    }} else {{
+                                        return {{ success: false, reason: 'item not found', available: itemTexts, searched: targetText }};
                                     }}
                                 }} else {{
                                     return {{ success: false, reason: 'combo object not found or no API' }};
@@ -818,11 +827,13 @@ class AthenaeumBooking:
                             }}''')
 
                             if success.get('success'):
-                                log(f"! Set Telerik duration to {duration_minutes} minutes using {success.get('method')}", 'INFO')
+                                log(f"! Set Telerik duration to '{success.get('selectedText', duration_minutes + ' Minutes')}' using {success.get('method')}", 'INFO')
                             else:
                                 log(f"! Could not set Telerik duration: {success.get('reason')}", 'ERROR')
                                 if 'available' in success:
                                     log(f"   Available options: {success['available']}", 'INFO')
+                                if 'searched' in success:
+                                    log(f"   Searched for: '{success['searched']}'", 'INFO')
                         except Exception as e:
                             log(f"! Could not set Telerik duration: {str(e)[:100]}", 'ERROR')
 
