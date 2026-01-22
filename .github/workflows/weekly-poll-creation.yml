@@ -80,7 +80,7 @@ jobs:
 
         echo ""
         echo "=== Creating Weekly Availability Poll ==="
-        python -u smad-whatsapp.py create-poll $DRY_RUN
+        python -u smad-whatsapp.py $DRY_RUN create-poll
 
         echo ""
         echo "=== Poll Creation Complete ==="

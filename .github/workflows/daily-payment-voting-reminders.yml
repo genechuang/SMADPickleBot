@@ -87,11 +87,11 @@ jobs:
 
         echo ""
         echo "=== Step 2: Sending Payment Reminders ==="
-        python -u smad-whatsapp.py send-balance-dm all $DRY_RUN
+        python -u smad-whatsapp.py $DRY_RUN send-balance-dm all
 
         echo ""
         echo "=== Step 3: Sending Vote Reminders ==="
-        python -u smad-whatsapp.py send-vote-reminders $DRY_RUN
+        python -u smad-whatsapp.py $DRY_RUN send-vote-reminders
 
         echo ""
         echo "=== Daily Automation Complete ==="
