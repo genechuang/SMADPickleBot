@@ -48,6 +48,7 @@ except ImportError:
 # Configuration
 SPREADSHEET_ID = os.environ.get('SMAD_SPREADSHEET_ID', '1w4_-hnykYgcs6nyyDkie9CwBRwri7aJUblD2mxgNUHY')
 SHEET_NAME = os.environ.get('SMAD_SHEET_NAME', '2026 Pickleball')
+POLL_LOG_SHEET_NAME = os.environ.get('POLL_LOG_SHEET_NAME', 'Pickle Poll Log')
 CREDENTIALS_FILE = os.environ.get('GOOGLE_CREDENTIALS_FILE', 'smad-credentials.json')
 HOURLY_RATE = float(os.environ.get('SMAD_HOURLY_RATE', '4.0'))
 
@@ -72,11 +73,23 @@ COL_LAST_PAID = 11
 COL_LAST_VOTED = 12  # Last poll vote date
 COL_FIRST_DATE = 13  # Date columns start here (newest first)
 
+# Pickle Poll Log sheet column indices (0-based)
+PPL_COL_POLL_ID = 0
+PPL_COL_POLL_DATE = 1
+PPL_COL_POLL_QUESTION = 2
+PPL_COL_PLAYER_NAME = 3
+PPL_COL_VOTE_TIMESTAMP = 4
+PPL_COL_VOTE_OPTIONS = 5
+PPL_COL_VOTE_RAW_JSON = 6
+
 # Export all column constants for other modules
 __all__ = [
     'COL_FIRST_NAME', 'COL_LAST_NAME', 'COL_VACATION', 'COL_EMAIL', 'COL_MOBILE',
     'COL_VENMO', 'COL_ZELLE', 'COL_BALANCE', 'COL_PAID',
-    'COL_INVOICED', 'COL_2026_HOURS', 'COL_LAST_PAID', 'COL_LAST_VOTED', 'COL_FIRST_DATE'
+    'COL_INVOICED', 'COL_2026_HOURS', 'COL_LAST_PAID', 'COL_LAST_VOTED', 'COL_FIRST_DATE',
+    'PPL_COL_POLL_ID', 'PPL_COL_POLL_DATE', 'PPL_COL_POLL_QUESTION', 'PPL_COL_PLAYER_NAME',
+    'PPL_COL_VOTE_TIMESTAMP', 'PPL_COL_VOTE_OPTIONS', 'PPL_COL_VOTE_RAW_JSON',
+    'POLL_LOG_SHEET_NAME'
 ]
 
 # Scopes for Google Sheets API
@@ -627,73 +640,209 @@ def send_reminders(sheets, min_balance: float = 0.01, send_summary: bool = True,
     return True
 
 
-def sync_votes_from_firestore(sheets):
+def ensure_pickle_poll_log_sheet(sheets):
     """
-    Sync vote data from Firestore to Google Sheets.
+    Ensure the Pickle Poll Log sheet exists with proper headers.
+    Creates the sheet if it doesn't exist.
 
-    Reads the latest poll votes from Firestore and updates the Google Sheet
-    with Last Voted dates and y/n values in date columns.
+    Returns:
+        True if sheet exists or was created, False on error
     """
     try:
-        from google.cloud import firestore
-    except ImportError:
-        print("ERROR: google-cloud-firestore not installed.")
-        print("Run: pip install google-cloud-firestore")
-        return False
+        # Get spreadsheet metadata to check if sheet exists
+        spreadsheet = sheets.get(spreadsheetId=SPREADSHEET_ID).execute()
 
-    # Initialize Firestore
-    try:
-        db = firestore.Client()
-    except Exception as e:
-        print(f"ERROR: Failed to connect to Firestore: {e}")
-        print("Make sure you've run: gcloud auth application-default login")
-        return False
+        # Check if Pickle Poll Log sheet exists
+        sheet_exists = False
+        for sheet in spreadsheet['sheets']:
+            if sheet['properties']['title'] == POLL_LOG_SHEET_NAME:
+                sheet_exists = True
+                break
 
-    # Get the most recent poll
-    polls_ref = db.collection('smad_polls')
-    polls = list(polls_ref.order_by('created_at', direction=firestore.Query.DESCENDING).limit(1).stream())
+        if not sheet_exists:
+            # Create the sheet
+            request = {
+                'requests': [{
+                    'addSheet': {
+                        'properties': {
+                            'title': POLL_LOG_SHEET_NAME,
+                            'gridProperties': {
+                                'rowCount': 1000,
+                                'columnCount': 7
+                            }
+                        }
+                    }
+                }]
+            }
+            sheets.batchUpdate(spreadsheetId=SPREADSHEET_ID, body=request).execute()
+            print(f"[OK] Created '{POLL_LOG_SHEET_NAME}' sheet")
 
-    if not polls:
-        print("No polls found in Firestore.")
-        return False
+            # Add headers
+            headers = [['Poll ID', 'Poll Created Date', 'Poll Question', 'Player Name',
+                       'Vote Timestamp', 'Vote Options', 'Vote Raw JSON']]
+            range_name = f"'{POLL_LOG_SHEET_NAME}'!A1:G1"
+            body = {'values': headers}
+            sheets.values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=range_name,
+                valueInputOption='RAW',
+                body=body
+            ).execute()
+            print(f"[OK] Added headers to '{POLL_LOG_SHEET_NAME}'")
 
-    poll = polls[0]
-    poll_data = poll.to_dict()
-    poll_id = poll.id
-
-    print(f"\n=== Syncing votes from poll: {poll_data.get('question', 'Unknown')} ===")
-    print(f"Poll ID: {poll_id}")
-    print(f"Options: {poll_data.get('options', [])}")
-
-    # Get all votes for this poll
-    votes_ref = polls_ref.document(poll_id).collection('votes')
-    votes = list(votes_ref.stream())
-
-    if not votes:
-        print("No votes found for this poll.")
         return True
 
-    print(f"\nFound {len(votes)} votes to sync:")
+    except HttpError as e:
+        print(f"ERROR: Failed to ensure Pickle Poll Log sheet: {e}")
+        return False
 
-    all_options = poll_data.get('options', [])
-    synced = 0
-    failed = 0
 
-    for vote_doc in votes:
-        voter_phone = vote_doc.id
-        vote_data = vote_doc.to_dict()
-        selected = vote_data.get('selected', [])
-        voter_name = vote_data.get('voter_name', 'Unknown')
+def record_poll_vote(sheets, poll_id: str, poll_date: str, poll_question: str,
+                     player_name: str, vote_timestamp: str, vote_options: str,
+                     vote_raw_json: str):
+    """
+    Record a poll vote in the Pickle Poll Log sheet.
 
-        print(f"  {voter_name} ({voter_phone}): {selected}")
+    Args:
+        sheets: Google Sheets service
+        poll_id: Unique poll identifier (message ID from WhatsApp)
+        poll_date: Date poll was created (M/D/YY HH:MM:SS format)
+        poll_question: The poll question text
+        player_name: Full name of voter (First Last)
+        vote_timestamp: When the vote was cast (M/D/YY HH:MM:SS format)
+        vote_options: Comma-separated list of selected options
+        vote_raw_json: JSON string of full vote data
 
-        if update_vote_in_sheet(sheets, voter_phone, selected, all_options):
-            synced += 1
-        else:
-            failed += 1
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Ensure sheet exists
+        if not ensure_pickle_poll_log_sheet(sheets):
+            return False
 
-    print(f"\n[OK] Synced {synced} votes, {failed} failed")
-    return True
+        # Append the vote row
+        row = [[poll_id, poll_date, poll_question, player_name, vote_timestamp,
+               vote_options, vote_raw_json]]
+
+        range_name = f"'{POLL_LOG_SHEET_NAME}'!A:G"
+        body = {'values': row}
+
+        sheets.values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=range_name,
+            valueInputOption='RAW',
+            insertDataOption='INSERT_ROWS',
+            body=body
+        ).execute()
+
+        return True
+
+    except HttpError as e:
+        print(f"ERROR: Failed to record poll vote: {e}")
+        return False
+
+
+def get_latest_poll_info(sheets) -> Optional[Dict[str, str]]:
+    """
+    Get information about the most recent poll.
+
+    Returns:
+        Dict with keys: poll_id, poll_date, poll_question
+        None if no polls found
+    """
+    try:
+        # Ensure sheet exists
+        if not ensure_pickle_poll_log_sheet(sheets):
+            return None
+
+        # Read all data from Pickle Poll Log
+        range_name = f"'{POLL_LOG_SHEET_NAME}'"
+        result = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=range_name
+        ).execute()
+        data = result.get('values', [])
+
+        if len(data) < 2:  # Only headers or empty
+            return None
+
+        # Find the row with the most recent poll date (skip header row)
+        latest_poll = None
+        latest_date = None
+
+        for row in data[1:]:  # Skip header
+            if len(row) >= 3:
+                poll_date_str = row[PPL_COL_POLL_DATE]
+
+                # Parse date to find latest (format: M/D/YY HH:MM:SS)
+                try:
+                    poll_date = datetime.strptime(poll_date_str, '%m/%d/%y %H:%M:%S')
+                except ValueError:
+                    try:
+                        # Try without time
+                        poll_date = datetime.strptime(poll_date_str, '%m/%d/%y')
+                    except ValueError:
+                        continue
+
+                if latest_date is None or poll_date > latest_date:
+                    latest_date = poll_date
+                    latest_poll = {
+                        'poll_id': row[PPL_COL_POLL_ID],
+                        'poll_date': row[PPL_COL_POLL_DATE],
+                        'poll_question': row[PPL_COL_POLL_QUESTION]
+                    }
+
+        return latest_poll
+
+    except HttpError as e:
+        print(f"ERROR: Failed to get latest poll info: {e}")
+        return None
+
+
+def get_poll_voters(sheets, poll_date: str) -> set:
+    """
+    Get the set of player names who voted in a poll on a specific date.
+
+    Args:
+        sheets: Google Sheets service
+        poll_date: Poll date to filter by (M/D/YY HH:MM:SS format)
+
+    Returns:
+        Set of player names (strings) who voted
+    """
+    try:
+        # Ensure sheet exists
+        if not ensure_pickle_poll_log_sheet(sheets):
+            return set()
+
+        # Read all data from Pickle Poll Log
+        range_name = f"'{POLL_LOG_SHEET_NAME}'"
+        result = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=range_name
+        ).execute()
+        data = result.get('values', [])
+
+        if len(data) < 2:  # Only headers or empty
+            return set()
+
+        # Collect player names for this poll date
+        voters = set()
+
+        for row in data[1:]:  # Skip header
+            if len(row) >= 4:
+                row_poll_date = row[PPL_COL_POLL_DATE]
+                player_name = row[PPL_COL_PLAYER_NAME]
+
+                if row_poll_date == poll_date:
+                    voters.add(player_name)
+
+        return voters
+
+    except HttpError as e:
+        print(f"ERROR: Failed to get poll voters: {e}")
+        return set()
 
 
 def main():
@@ -707,7 +856,6 @@ Examples:
   %(prog)s register "John Doe" "Sun 1/19/26" 2    Register 2 hours for John
   %(prog)s add-date "Tues 1/21/26"                Add new date column
   %(prog)s send-reminders                         Send payment reminders
-  %(prog)s sync-votes                             Sync votes from Firestore to sheet
 
 Environment variables:
   SMAD_SPREADSHEET_ID      Google Sheets ID (default: your SMAD sheet)
@@ -743,9 +891,6 @@ Environment variables:
     reminder_parser.add_argument('--send-individual', action='store_true',
                                  help='Send individual reminder emails to players with email addresses')
 
-    # sync-votes
-    subparsers.add_parser('sync-votes', help='Sync votes from Firestore to Google Sheets')
-
     args = parser.parse_args()
 
     if not args.command:
@@ -766,8 +911,6 @@ Environment variables:
         add_date_column(sheets, args.date)
     elif args.command == 'send-reminders':
         send_reminders(sheets, args.min_balance, send_individual=args.send_individual)
-    elif args.command == 'sync-votes':
-        sync_votes_from_firestore(sheets)
     else:
         parser.print_help()
         sys.exit(1)

@@ -93,11 +93,7 @@ COL_FIRST_DATE = _smad_sheets.COL_FIRST_DATE
 # Google Sheets scopes (need write access for updating Last Voted and poll responses)
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
-# Configuration - Firestore (for poll vote tracking)
-GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID', '')
-FIRESTORE_COLLECTION = 'smad_polls'
-
-# Configuration - Poll tracking (for legacy poll before webhook was set up)
+# Configuration - Poll tracking
 POLL_CREATED_DATE = os.environ.get('POLL_CREATED_DATE', '')  # Format: M/DD/YY
 
 # Configuration - Booking list (for poll options)
@@ -105,30 +101,6 @@ BOOKING_LIST = os.environ.get('BOOKING_LIST', '')  # Format: Monday 7:00 PM|Both
 
 # Bot signature for all WhatsApp messages
 PICKLEBOT_SIGNATURE = "Picklebot🥒🏓🤖"
-
-# Firestore client (lazy initialization)
-_firestore_client = None
-
-def get_firestore_client():
-    """Initialize and return Firestore client."""
-    global _firestore_client
-    if _firestore_client is None:
-        try:
-            from google.cloud import firestore
-            if GCP_PROJECT_ID:
-                _firestore_client = firestore.Client(project=GCP_PROJECT_ID)
-            else:
-                # Try to use default credentials
-                _firestore_client = firestore.Client()
-        except ImportError:
-            print("ERROR: Firestore library not installed.")
-            print("Run: pip install google-cloud-firestore")
-            sys.exit(1)
-        except Exception as e:
-            print(f"ERROR: Failed to initialize Firestore: {e}")
-            print("Make sure GCP_PROJECT_ID is set and you have valid credentials.")
-            sys.exit(1)
-    return _firestore_client
 
 
 def get_whatsapp_client():
@@ -179,10 +151,11 @@ def add_poll_date_columns(sheets, date_options: List[str]) -> bool:
     """
     Add new date columns to the sheet for poll options.
     Inserts columns right after COL_LAST_VOTED (column O), newest first.
+    Skips any date columns that already exist to avoid overwriting old poll data.
 
     Args:
         sheets: Google Sheets service
-        date_options: List of date strings like ["Wed 1/22/26 7pm-9pm", "Fri 1/24/26 7pm-9pm"]
+        date_options: List of date strings like ["Wed 1/22/26 7pm", "Fri 1/24/26 7pm"]
 
     Returns:
         True if successful, False otherwise.
@@ -191,6 +164,32 @@ def add_poll_date_columns(sheets, date_options: List[str]) -> bool:
         return True
 
     try:
+        # Reverse order so newest date appears on the left
+        date_options_reversed = list(reversed(date_options))
+
+        # Read existing headers to check for duplicates
+        result = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"'{SHEET_NAME}'!1:1"
+        ).execute()
+        existing_headers = result.get('values', [[]])[0] if result.get('values') else []
+
+        # Filter out date options that already exist
+        new_date_options = []
+        skipped_dates = []
+        for date_opt in date_options_reversed:
+            if date_opt in existing_headers:
+                skipped_dates.append(date_opt)
+            else:
+                new_date_options.append(date_opt)
+
+        if skipped_dates:
+            print(f"[INFO] Skipped {len(skipped_dates)} existing date columns: {', '.join(skipped_dates)}")
+
+        if not new_date_options:
+            print(f"[INFO] All date columns already exist, no new columns added")
+            return True
+
         # Get spreadsheet ID for insertDimension request
         spreadsheet = sheets.get(spreadsheetId=SPREADSHEET_ID).execute()
         sheet_id = None
@@ -203,9 +202,8 @@ def add_poll_date_columns(sheets, date_options: List[str]) -> bool:
             print(f"[ERROR] Sheet '{SHEET_NAME}' not found")
             return False
 
-        # Insert columns after COL_LAST_VOTED (index 14 = column O)
-        # We need to insert len(date_options) columns at position COL_FIRST_DATE
-        num_cols = len(date_options)
+        # Insert columns after COL_LAST_VOTED
+        num_cols = len(new_date_options)
 
         # Insert columns
         requests = [{
@@ -213,7 +211,7 @@ def add_poll_date_columns(sheets, date_options: List[str]) -> bool:
                 'range': {
                     'sheetId': sheet_id,
                     'dimension': 'COLUMNS',
-                    'startIndex': COL_FIRST_DATE,  # Column N (0-indexed = 13)
+                    'startIndex': COL_FIRST_DATE,
                     'endIndex': COL_FIRST_DATE + num_cols
                 },
                 'inheritFromBefore': False
@@ -225,7 +223,6 @@ def add_poll_date_columns(sheets, date_options: List[str]) -> bool:
             body={'requests': requests}
         ).execute()
 
-        # Set header row with date labels (newest first is already how options are ordered)
         # Convert column index to letter
         def col_to_letter(col_idx):
             result = ""
@@ -236,17 +233,62 @@ def add_poll_date_columns(sheets, date_options: List[str]) -> bool:
 
         start_col = col_to_letter(COL_FIRST_DATE)
         end_col = col_to_letter(COL_FIRST_DATE + num_cols - 1)
-        range_str = f"'{SHEET_NAME}'!{start_col}1:{end_col}1"
 
-        # Write headers
+        # Write headers to row 1
+        range_str_row1 = f"'{SHEET_NAME}'!{start_col}1:{end_col}1"
         sheets.values().update(
             spreadsheetId=SPREADSHEET_ID,
-            range=range_str,
+            range=range_str_row1,
             valueInputOption='RAW',
-            body={'values': [date_options]}
+            body={'values': [new_date_options]}
         ).execute()
 
-        print(f"[OK] Added {num_cols} date columns to sheet: {', '.join(date_options)}")
+        # Find or create Totals row
+        # Read all data to find the last row
+        result = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"'{SHEET_NAME}'"
+        ).execute()
+        data = result.get('values', [])
+
+        # Check if last row has "Totals" in column A
+        totals_row_idx = None
+        if len(data) > 0:
+            last_row = data[-1]
+            if len(last_row) > 0 and last_row[0] == "Totals":
+                totals_row_idx = len(data)
+            else:
+                # Need to add Totals row
+                totals_row_idx = len(data) + 1
+                # Add "Totals" to column A
+                sheets.values().update(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range=f"'{SHEET_NAME}'!A{totals_row_idx}",
+                    valueInputOption='RAW',
+                    body={'values': [["Totals"]]}
+                ).execute()
+
+        # Add COUNTIF formulas for each new date column in the totals row
+        if totals_row_idx:
+            formulas = []
+            for j in range(num_cols):
+                col_letter = col_to_letter(COL_FIRST_DATE + j)
+                # Formula counts 'y' from row 2 to row before totals
+                formula = f"=COUNTIF('{SHEET_NAME}'!{col_letter}2:{col_letter}{totals_row_idx-1}, \"y\")"
+                formulas.append(formula)
+
+            # Write formulas to totals row (single row with multiple columns)
+            if formulas:
+                range_str_totals = f"'{SHEET_NAME}'!{start_col}{totals_row_idx}:{end_col}{totals_row_idx}"
+                sheets.values().update(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range=range_str_totals,
+                    valueInputOption='USER_ENTERED',  # Parse formulas
+                    body={'values': [formulas]}
+                ).execute()
+
+        print(f"[OK] Added {num_cols} new date columns (newest first): {', '.join(new_date_options)}")
+        print(f"[OK] Added COUNTIF formulas to totals row")
         return True
 
     except Exception as e:
@@ -423,14 +465,14 @@ def send_balance_summary_to_group(wa_client, players: List[Dict], dry_run: bool 
         message += f"Please send payment via Venmo to @gene-chuang or Zelle to genechuang@gmail.com.\n\n{PICKLEBOT_SIGNATURE}"
 
     if dry_run:
-        print(f"[DRY RUN] Would send to group ({SMAD_GROUP_ID}):")
+        print(f"[DRY RUN] Would send to SMAD Pickleball group ({SMAD_GROUP_ID}):")
         print(message)
         return True
 
     try:
         response = wa_client.sending.sendMessage(SMAD_GROUP_ID, message)
         if response.code == 200:
-            print(f"[OK] Balance summary sent to group")
+            print("[OK] Balance summary sent to SMAD Pickleball group")
             return True
         else:
             print(f"[ERROR] Failed to send to group: {response.data}")
@@ -478,22 +520,21 @@ def parse_booking_list() -> List[Dict]:
 
 def format_time_for_poll(time_str: str, duration_hours: int = 2) -> str:
     """
-    Convert time like "7:00 PM" to poll format like "7pm-9pm".
+    Convert time like "7:00 PM" to poll format like "7pm" (assumes 2-hour session).
 
     Args:
         time_str: Time string like "7:00 PM" or "10:00 AM"
-        duration_hours: Duration in hours (default 2)
+        duration_hours: Duration in hours (default 2, not used but kept for compatibility)
 
     Returns:
-        Formatted string like "7pm-9pm" or "10am-12pm"
+        Formatted string like "7pm" or "10am"
     """
     try:
         # Parse the time
         time_obj = datetime.strptime(time_str.strip(), "%I:%M %p")
         start_hour = time_obj.hour
-        end_hour = start_hour + duration_hours
 
-        # Format start time
+        # Format start time (shorter format without end time)
         if start_hour == 0:
             start_str = "12am"
         elif start_hour < 12:
@@ -503,17 +544,7 @@ def format_time_for_poll(time_str: str, duration_hours: int = 2) -> str:
         else:
             start_str = f"{start_hour - 12}pm"
 
-        # Format end time
-        if end_hour == 0 or end_hour == 24:
-            end_str = "12am"
-        elif end_hour < 12:
-            end_str = f"{end_hour}am"
-        elif end_hour == 12:
-            end_str = "12pm"
-        else:
-            end_str = f"{end_hour - 12}pm"
-
-        return f"{start_str}-{end_str}"
+        return start_str
     except ValueError:
         # If parsing fails, return original
         return time_str
@@ -590,10 +621,15 @@ def create_availability_poll(wa_client, dry_run: bool = False) -> bool:
     # Add "Can't play this week" option
     options.append({"optionName": "Can't play this week"})
 
-    poll_question = f"When can you play pickleball this week? {PICKLEBOT_SIGNATURE}"
+    # Calculate Monday of current week for poll question
+    days_since_monday = today.weekday()  # Monday=0, Sunday=6
+    monday_of_week = today - timedelta(days=days_since_monday)
+    monday_str = f"{monday_of_week.month}/{monday_of_week.day}/{monday_of_week.year % 100}"
+
+    poll_question = f"Can you play the week of {monday_str}? {PICKLEBOT_SIGNATURE}"
 
     if dry_run:
-        print(f"[DRY RUN] Would create poll in group ({SMAD_GROUP_ID}):")
+        print(f"[DRY RUN] Would create poll in SMAD Pickleball group ({SMAD_GROUP_ID}):")
         print(f"Question: {poll_question}")
         print("Options:")
         for opt in options:
@@ -608,8 +644,23 @@ def create_availability_poll(wa_client, dry_run: bool = False) -> bool:
             multipleAnswers=True
         )
         if response.code == 200:
-            print(f"[OK] Availability poll created in group")
-            print(f"Poll ID: {response.data.get('idMessage', 'N/A')}")
+            message_id = response.data.get('idMessage', '')
+            print("[OK] Availability poll created in SMAD Pickleball group")
+            print(f"Poll ID: {message_id}")
+
+            # Pin the poll message to the group
+            if message_id:
+                try:
+                    pin_response = wa_client.serviceMethods.pinMessage(
+                        SMAD_GROUP_ID,
+                        message_id
+                    )
+                    if pin_response.code == 200:
+                        print(f"[OK] Poll pinned to group")
+                    else:
+                        print(f"[WARNING] Failed to pin poll: {pin_response.data}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to pin poll: {e}")
 
             # Add date columns to the sheet (exclude "Can't play this week" option)
             date_options = [opt['optionName'] for opt in options if "can't play" not in opt['optionName'].lower()]
@@ -922,105 +973,102 @@ def show_recent_poll(players: List[Dict] = None) -> Optional[Dict]:
         return None
 
 
-def get_poll_votes_from_firestore(poll_id: str = None, players: List[Dict] = None) -> Optional[Dict]:
+def get_poll_votes_from_sheets(poll_date: str = None, players: List[Dict] = None) -> Optional[Dict]:
     """
-    Retrieve poll votes from Firestore.
+    Retrieve poll votes from Google Sheets (Pickle Poll Log).
 
     Args:
-        poll_id: Specific poll ID to retrieve. If None, gets the most recent poll.
+        poll_date: Specific poll date to retrieve. If None, gets the most recent poll.
         players: List of player dicts for name resolution.
 
     Returns:
         Dict with poll data and votes, or None if not found.
     """
     try:
-        db = get_firestore_client()
-        polls_ref = db.collection(FIRESTORE_COLLECTION)
+        sheets = get_sheets_service()
 
-        if poll_id:
-            # Get specific poll
-            poll_doc = polls_ref.document(poll_id).get()
-            if not poll_doc.exists:
+        # Get latest poll info if poll_date not specified
+        if not poll_date:
+            poll_info = _smad_sheets.get_latest_poll_info(sheets)
+            if not poll_info:
                 return None
-            polls = [(poll_doc.id, poll_doc.to_dict())]
+            poll_date = poll_info.get('poll_date', '')
+            poll_question = poll_info.get('poll_question', '')
+            poll_id = poll_info.get('poll_id', '')
         else:
-            # Get most recent poll
-            polls_query = polls_ref.order_by('created_at', direction='DESCENDING').limit(1)
-            polls = [(doc.id, doc.to_dict()) for doc in polls_query.stream()]
+            poll_question = "Unknown"
+            poll_id = "Unknown"
 
-        if not polls:
-            return None
+        # Read raw data from Pickle Poll Log to get vote details
+        range_name = f"'{_smad_sheets.POLL_LOG_SHEET_NAME}'"
+        result = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=range_name
+        ).execute()
+        data = result.get('values', [])
 
-        poll_id, poll_data = polls[0]
-
-        # Get votes subcollection
-        votes_ref = polls_ref.document(poll_id).collection('votes')
+        # Parse votes from rows matching this poll date
         votes = {}
-        for vote_doc in votes_ref.stream():
-            voter_id = vote_doc.id
-            vote_data = vote_doc.to_dict()
-            votes[voter_id] = vote_data
+        all_options = set()
 
-        # Build phone lookup for name resolution
-        phone_to_player = {}
+        for row in data[1:]:  # Skip header
+            if len(row) >= 6:
+                row_poll_date = row[_smad_sheets.PPL_COL_POLL_DATE]
+                if row_poll_date == poll_date:
+                    player_name = row[_smad_sheets.PPL_COL_PLAYER_NAME]
+                    vote_options_str = row[_smad_sheets.PPL_COL_VOTE_OPTIONS]
+
+                    # Parse selected options
+                    selected = [opt.strip() for opt in vote_options_str.split(',') if opt.strip()]
+
+                    # Collect all options
+                    all_options.update(selected)
+
+                    # Store vote by player name
+                    votes[player_name] = {
+                        'selected': selected,
+                        'voter_name': player_name
+                    }
+
+        # Build player name lookup
+        name_to_player = {}
         if players:
             for player in players:
-                phone = player.get('mobile', '')
-                if phone:
-                    digits = ''.join(c for c in phone if c.isdigit())
-                    if len(digits) == 10:
-                        digits = '1' + digits
-                    phone_to_player[digits] = player
+                name_to_player[player['name']] = player
 
         return {
             'poll_id': poll_id,
-            'question': poll_data.get('question', 'Unknown'),
-            'options': poll_data.get('options', []),
-            'created_at': poll_data.get('created_at'),
+            'poll_date': poll_date,
+            'question': poll_question,
+            'options': list(all_options),
             'votes': votes,
-            'phone_to_player': phone_to_player
+            'name_to_player': name_to_player
         }
 
     except Exception as e:
-        print(f"[ERROR] Failed to retrieve votes from Firestore: {e}")
+        print(f"[ERROR] Failed to retrieve votes from Sheets: {e}")
         return None
 
 
-def show_poll_votes(poll_id: str = None, players: List[Dict] = None) -> Optional[Dict]:
+def show_poll_votes(poll_date: str = None, players: List[Dict] = None) -> Optional[Dict]:
     """
-    Display poll votes from Firestore with player names.
+    Display poll votes from Google Sheets with player names.
     """
-    poll_data = get_poll_votes_from_firestore(poll_id, players)
+    poll_data = get_poll_votes_from_sheets(poll_date, players)
 
     if not poll_data:
-        print("No poll data found in Firestore.")
+        print("No poll data found in Pickle Poll Log sheet.")
         print("\nMake sure:")
         print("1. The webhook is deployed and configured")
-        print("2. Votes have been cast since the webhook was set up")
-        print("3. GCP_PROJECT_ID is set correctly in .env")
+        print("2. Votes have been cast and recorded in the Pickle Poll Log sheet")
         return None
 
-    phone_to_player = poll_data.get('phone_to_player', {})
     votes = poll_data.get('votes', {})
     options = poll_data.get('options', [])
 
-    def get_name(phone: str) -> str:
-        player = phone_to_player.get(phone)
-        if player:
-            return player['name']
-        if len(phone) == 11 and phone.startswith('1'):
-            return f"({phone[1:4]}) {phone[4:7]}-{phone[7:]}"
-        return phone
-
     print(f"\n=== Poll Votes ===\n")
     print(f"Question: {poll_data['question']}")
-    print(f"Poll ID: {poll_data['poll_id']}")
-
-    if poll_data.get('created_at'):
-        created = poll_data['created_at']
-        if hasattr(created, 'strftime'):
-            print(f"Created: {created.strftime('%Y-%m-%d %I:%M %p')}")
-
+    print(f"Poll Date: {poll_data.get('poll_date', 'Unknown')}")
     print(f"Total voters: {len(votes)}")
 
     # Group votes by option
@@ -1031,13 +1079,12 @@ def show_poll_votes(poll_id: str = None, players: List[Dict] = None) -> Optional
     # Phrases that indicate "cannot play"
     cannot_play_phrases = ["cannot play", "can't play", "cant play", "not available", "unavailable"]
 
-    for voter_id, vote_data in votes.items():
+    for player_name, vote_data in votes.items():
         selected = vote_data.get('selected', [])
-        voter_name = get_name(voter_id)
 
         if not selected:
             # Empty selection (removed all votes)
-            no_response_yet.append(voter_name)
+            no_response_yet.append(player_name)
             continue
 
         # Check if this is a "cannot play" response
@@ -1047,14 +1094,14 @@ def show_poll_votes(poll_id: str = None, players: List[Dict] = None) -> Optional
         )
 
         if is_cannot_play:
-            cannot_play_voters.append(voter_name)
+            cannot_play_voters.append(player_name)
         else:
             for opt in selected:
                 if opt in option_voters:
-                    option_voters[opt].append(voter_name)
+                    option_voters[opt].append(player_name)
                 else:
                     # Option not in our list, add it
-                    option_voters[opt] = [voter_name]
+                    option_voters[opt] = [player_name]
 
     # Display by option
     print(f"\n--- Votes by Option ---\n")
@@ -1078,16 +1125,11 @@ def show_poll_votes(poll_id: str = None, players: List[Dict] = None) -> Optional
 
     # Show who hasn't voted (from group members)
     if players:
-        voted_phones = set(votes.keys())
+        voted_names = set(votes.keys())
         not_voted = []
         for player in players:
-            phone = player.get('mobile', '')
-            if phone:
-                digits = ''.join(c for c in phone if c.isdigit())
-                if len(digits) == 10:
-                    digits = '1' + digits
-                if digits not in voted_phones:
-                    not_voted.append(player['name'])
+            if player['name'] not in voted_names:
+                not_voted.append(player['name'])
 
         if not_voted:
             print(f"Haven't voted yet: ({len(not_voted)})")
@@ -1118,25 +1160,28 @@ def parse_date_string(date_str: str) -> Optional[datetime]:
 
 def get_poll_created_date() -> Optional[datetime]:
     """
-    Get the poll creation date from Firestore (most recent poll) or POLL_CREATED_DATE env var.
+    Get the poll creation date from Google Sheets (Pickle Poll Log) or POLL_CREATED_DATE env var.
     Returns datetime object or None if not found.
     """
-    # First try Firestore
+    # First try Google Sheets
     try:
-        db = get_firestore_client()
-        polls_ref = db.collection(FIRESTORE_COLLECTION)
-        polls_query = polls_ref.order_by('created_at', direction='DESCENDING').limit(1)
-        polls = list(polls_query.stream())
-        if polls:
-            poll_data = polls[0].to_dict()
-            created_at = poll_data.get('created_at')
-            if created_at:
-                # Convert to datetime if it's a Firestore timestamp
-                if hasattr(created_at, 'date'):
-                    return datetime(created_at.year, created_at.month, created_at.day)
-                return created_at
+        sheets = get_sheets_service()
+        poll_info = _smad_sheets.get_latest_poll_info(sheets)
+        if poll_info:
+            poll_date_str = poll_info.get('poll_date', '')
+            # Parse date (format: M/D/YY HH:MM:SS or M/D/YY)
+            if poll_date_str:
+                try:
+                    poll_date = datetime.strptime(poll_date_str, '%m/%d/%y %H:%M:%S')
+                    return datetime(poll_date.year, poll_date.month, poll_date.day)
+                except ValueError:
+                    try:
+                        poll_date = datetime.strptime(poll_date_str, '%m/%d/%y')
+                        return poll_date
+                    except ValueError:
+                        pass
     except Exception as e:
-        print(f"[WARNING] Could not get poll date from Firestore: {e}")
+        print(f"[WARNING] Could not get poll date from Sheets: {e}")
 
     # Fall back to POLL_CREATED_DATE env var
     if POLL_CREATED_DATE:
@@ -1161,7 +1206,7 @@ def send_vote_reminders(wa_client, players: List[Dict], dry_run: bool = False) -
     poll_created = get_poll_created_date()
     if not poll_created:
         print("ERROR: Could not determine poll creation date.")
-        print("Make sure there's a poll in Firestore or POLL_CREATED_DATE is set.")
+        print("Make sure there are votes in the Pickle Poll Log sheet or POLL_CREATED_DATE is set.")
         return 0
 
     print(f"\n=== Vote Reminders (Poll created: {poll_created.month}/{poll_created.day}/{poll_created.year % 100}) ===\n")
@@ -1246,7 +1291,7 @@ def send_group_vote_reminder(wa_client, players: List[Dict], dry_run: bool = Fal
     poll_created = get_poll_created_date()
     if not poll_created:
         print("ERROR: Could not determine poll creation date.")
-        print("Make sure there's a poll in Firestore or POLL_CREATED_DATE is set.")
+        print("Make sure there are votes in the Pickle Poll Log sheet or POLL_CREATED_DATE is set.")
         return False
 
     # Find players who haven't voted (Last Voted < poll created date, or empty)
@@ -1277,14 +1322,14 @@ Please vote in the pinned poll so I can plan the games for this week!
 {PICKLEBOT_SIGNATURE}"""
 
     if dry_run:
-        print(f"[DRY RUN] Would send to group ({SMAD_GROUP_ID}):")
+        print(f"[DRY RUN] Would send to SMAD Pickleball group ({SMAD_GROUP_ID}):")
         print(message)
         return True
 
     try:
         response = wa_client.sending.sendMessage(SMAD_GROUP_ID, message)
         if response.code == 200:
-            print(f"[OK] Vote reminder sent to group ({len(not_voted)} players listed)")
+            print(f"[OK] Vote reminder sent to SMAD Pickleball group ({len(not_voted)} players listed)")
             return True
         else:
             print(f"[ERROR] Failed to send to group: {response.data}")
@@ -1295,10 +1340,10 @@ Please vote in the pinned poll so I can plan the games for this week!
 
 
 def cmd_show_votes(args):
-    """Command: Show poll votes from Firestore."""
+    """Command: Show poll votes from Pickle Poll Log sheet."""
     sheets = get_sheets_service()
     players = get_player_data(sheets)
-    show_poll_votes(poll_id=args.poll_id if hasattr(args, 'poll_id') else None, players=players)
+    show_poll_votes(poll_date=args.poll_date if hasattr(args, 'poll_date') else None, players=players)
 
 
 def cmd_send_vote_reminders(args):
@@ -1398,7 +1443,7 @@ def cmd_list_group_members(args):
 
 def cmd_send_poll_reminders(args):
     """Command: Send poll reminders to players who haven't responded."""
-    # Redirect to the new Firestore-based implementation
+    # Redirect to the new Sheet-based implementation
     cmd_send_vote_reminders(args)
 
 
@@ -1410,7 +1455,7 @@ def main():
 Examples:
   %(prog)s list-chats                       List all chats to find group IDs
   %(prog)s show-poll                        Show the most recent poll (from WhatsApp)
-  %(prog)s show-votes                       Show poll votes (from Firestore webhook)
+  %(prog)s show-votes                       Show poll votes (from Pickle Poll Log sheet)
   %(prog)s send-vote-reminders              Send DM reminders to non-voters
   %(prog)s send-group-vote-reminder         Post vote reminder to group (lists non-voters)
   %(prog)s send-balance-dm "John Doe"       Send balance reminder to John
@@ -1423,7 +1468,6 @@ Environment variables:
   GREENAPI_INSTANCE_ID      GREEN-API instance ID
   GREENAPI_API_TOKEN        GREEN-API API token
   SMAD_WHATSAPP_GROUP_ID    WhatsApp group ID (e.g., 123456789@g.us)
-  GCP_PROJECT_ID            Google Cloud project ID (for Firestore)
 
   (Also uses SMAD Google Sheets config from smad-sheets.py)
         """
@@ -1469,18 +1513,18 @@ Environment variables:
                                               help='Show the most recent poll from the group')
     show_poll_parser.set_defaults(func=cmd_show_poll)
 
-    # show-votes (from Firestore)
+    # show-votes (from Pickle Poll Log sheet)
     show_votes_parser = subparsers.add_parser('show-votes',
-                                               help='Show poll votes from Firestore webhook')
-    show_votes_parser.add_argument('--poll-id', dest='poll_id',
-                                    help='Specific poll ID (default: most recent)')
+                                               help='Show poll votes from Pickle Poll Log sheet')
+    show_votes_parser.add_argument('--poll-date', dest='poll_date',
+                                    help='Specific poll date (M/D/YY HH:MM:SS format, default: most recent)')
     show_votes_parser.set_defaults(func=cmd_show_votes)
 
     # send-vote-reminders
     vote_reminder_parser = subparsers.add_parser('send-vote-reminders',
                                                   help='Send DM reminders to players who haven\'t voted')
-    vote_reminder_parser.add_argument('--poll-id', dest='poll_id',
-                                       help='Specific poll ID (default: most recent)')
+    vote_reminder_parser.add_argument('--poll-date', dest='poll_date',
+                                       help='Specific poll date (M/D/YY HH:MM:SS format, default: most recent)')
     vote_reminder_parser.set_defaults(func=cmd_send_vote_reminders)
 
     # send-group-vote-reminder
