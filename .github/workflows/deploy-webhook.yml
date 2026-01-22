@@ -35,17 +35,10 @@ jobs:
       - name: Enable required APIs
         run: |
           gcloud services enable cloudfunctions.googleapis.com \
-            firestore.googleapis.com \
             cloudbuild.googleapis.com \
             run.googleapis.com \
             artifactregistry.googleapis.com \
             --project=${{ env.PROJECT_ID }}
-
-      - name: Create Firestore database if not exists
-        run: |
-          if ! gcloud firestore databases describe --project=${{ env.PROJECT_ID }} 2>/dev/null; then
-            gcloud firestore databases create --project=${{ env.PROJECT_ID }} --location=${{ env.REGION }} || true
-          fi
 
       - name: Deploy Cloud Function
         run: |

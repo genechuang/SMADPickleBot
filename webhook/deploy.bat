@@ -43,17 +43,6 @@ echo Region: %REGION%
 echo Function: %FUNCTION_NAME%
 echo.
 
-REM Check if Firestore is initialized
-echo Checking Firestore...
-gcloud firestore databases list --project="%PROJECT_ID%" 2>nul | findstr /C:"(default)" >nul
-if errorlevel 1 (
-    echo Firestore not initialized. Creating database...
-    gcloud firestore databases create --project="%PROJECT_ID%" --location="%REGION%" --type=firestore-native
-    echo Firestore database created.
-) else (
-    echo Firestore already initialized.
-)
-
 REM Deploy the function
 echo.
 echo Deploying Cloud Function...

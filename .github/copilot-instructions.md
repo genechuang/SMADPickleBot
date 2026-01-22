@@ -26,13 +26,14 @@ This codebase is a multi-service pickleball automation platform for court bookin
    - Uses GREEN-API (WhatsApp API service)
 
 4. **WhatsApp Poll Webhook** (`webhook/main.py`) - Google Cloud Function
-   - Receives poll vote updates from GREEN-API and stores in Firestore
+   - Receives poll vote updates from GREEN-API and stores in Google Sheets (Pickle Poll Log)
    - Implements "cannot play" override logic (if user selects both play dates and "I cannot play", keep only "cannot play")
-   - Real-time vote tracking; Google Sheets sync via `smad-sheets.py sync-votes` command
+   - Real-time vote tracking; automatically updates Last Voted date and y/n values in date columns
+   - Sunday cleanup: automatically deletes poll log entries older than 7 days
 
 **Common Utilities:**
 - `email_service.py` - Shared Gmail SMTP module for booking notifications, payment reminders, balance summaries
-- `requirements.txt` - Playwright, Google APIs, WhatsApp client, Firestore, python-dotenv
+- `requirements.txt` - Playwright, Google APIs, WhatsApp client, python-dotenv
 
 ## Critical Developer Patterns
 
@@ -99,7 +100,7 @@ README.md                   # Athenaeum court booking overview
 ### Adding a new field to player tracking
 1. Add column index constant to BOTH `smad-sheets.py` and `smad-whatsapp.py`
 2. Update Google Sheets API query ranges if needed
-3. If affecting webhook data, update `webhook/main.py` Firestore schema
+3. If affecting webhook data, update `webhook/main.py` Google Sheets integration
 
 ### Fixing timing issues with Athenaeum booking
 - Check `prepare_booking_list_mode()` function (line ~68 in ath-booking.py)
@@ -125,9 +126,9 @@ README.md                   # Athenaeum court booking overview
 - `google-auth==2.27.0` - Google Cloud authentication
 - `google-api-python-client==2.118.0` - Sheets & Drive APIs
 - `whatsapp-api-client-python==0.0.46` - GREEN-API wrapper
-- `google-cloud-firestore==2.*` - Real-time database
 - `python-dotenv==1.0.0` - .env file handling
 - `pytz==2025.2` - Timezone handling (critical for PST synchronization)
+- `venmo-api==0.3.1` - Unofficial Venmo API for payment tracking
 
 ## Security Notes
 

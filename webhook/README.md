@@ -1,19 +1,22 @@
 # SMAD WhatsApp Poll Webhook
 
-This webhook tracks poll votes from the SMAD WhatsApp group, storing them in Google Cloud Firestore.
+This webhook tracks poll votes from the SMAD WhatsApp group, storing them in Google Sheets.
 
 ## Features
 
-- **Tracks poll votes** - Captures who voted for what options
-- **Handles vote changes** - When someone changes their vote, their selection is updated
-- **"Cannot play" override** - If someone selects both play dates AND "I cannot play this week", only the "cannot play" option is kept (assumes they forgot to unselect dates)
-- **Vote history** - Keeps an audit trail of vote changes
+- **Tracks poll votes** - Captures who voted for what options in the "Pickle Poll Log" sheet
+- **Handles vote changes** - When someone changes their vote, a new audit entry is created
+- **Updates player sheets** - Automatically updates Last Voted date and y/n values in date columns
+- **"Cannot play" override** - If someone selects both play dates AND "I cannot play this week", only the "cannot play" option is kept
+- **Sunday cleanup** - Automatically deletes poll log entries older than 7 days every Sunday
+- **Poll age validation** - Ignores votes from polls older than 7 days
 
 ## Prerequisites
 
 1. **Google Cloud account** with a project
 2. **gcloud CLI** installed and authenticated
 3. **GREEN-API account** (you should already have this for smad-whatsapp.py)
+4. **Google Sheets** with service account access (already configured in smad-sheets.py)
 
 ## Setup Instructions
 
@@ -31,7 +34,6 @@ gcloud config set project YOUR_PROJECT_ID
 
 # Enable required APIs
 gcloud services enable cloudfunctions.googleapis.com
-gcloud services enable firestore.googleapis.com
 gcloud services enable cloudbuild.googleapis.com
 ```
 
@@ -80,72 +82,50 @@ https://smad-whatsapp-webhook-xxxxx.a.run.app
    - `incomingMessageReceived` - For incoming poll votes
    - `outgoingMessageReceived` - For polls you create
 
-### Step 4: Update your .env file
+### Step 4: Ensure Google Sheets Access
 
-Add the GCP project ID:
+The webhook uses the same service account as smad-sheets.py. Make sure:
 
-```bash
-GCP_PROJECT_ID=your_gcp_project_id
-```
+1. Your Google Sheet is shared with the service account email
+2. The service account has Editor permissions
+3. The SMAD_SPREADSHEET_ID environment variable is set (already configured)
 
-### Step 5: Install Firestore client locally
-
-To use `show-votes` and `send-vote-reminders` commands:
-
-```bash
-pip install google-cloud-firestore
-```
-
-Or add to requirements.txt:
-```
-google-cloud-firestore==2.*
-```
-
-## Usage
-
-After the webhook is deployed and configured:
-
-```bash
-# Show votes for the current poll
-python smad-whatsapp.py show-votes
-
-# Show votes for a specific poll
-python smad-whatsapp.py show-votes --poll-id 3ADC47CA8A9698ABFD00
-
-# Send DM reminders to players who haven't voted
-python smad-whatsapp.py send-vote-reminders
-
-# Preview reminders without sending (dry run)
-python smad-whatsapp.py send-vote-reminders --dry-run
-```
+The webhook will automatically create the "Pickle Poll Log" sheet if it doesn't exist.
 
 ## Data Model
 
-### Firestore Structure
+### Google Sheets Structure
 
-```
-Collection: smad_polls
-└── Document: {poll_id}
-    ├── question: "Can you play this week?"
-    ├── chat_id: "120363401568722062@g.us"
-    ├── created_at: timestamp
-    ├── options: ["Sat 1/25", "Sun 1/26", "I cannot play this week"]
-    │
-    └── Subcollection: votes
-        └── Document: {phone_number}
-            ├── selected: ["Sat 1/25"]
-            ├── updated_at: timestamp
-            ├── voter_name: "John Doe"
-            └── vote_history: [{selected: [...], timestamp: "..."}]
-```
+**Sheet: Pickle Poll Log**
+| Column | Header | Description |
+|--------|--------|-------------|
+| A | Poll ID | WhatsApp message ID (stanza ID) |
+| B | Poll Created Date | When the poll was created (M/D/YY HH:MM:SS) |
+| C | Poll Question | The poll question text |
+| D | Player Name | Full name of voter |
+| E | Vote Timestamp | When the vote was cast (M/D/YY HH:MM:SS) |
+| F | Vote Options | Comma-separated selected options |
+| G | Vote Raw JSON | Full vote data as JSON (audit trail) |
+
+**Sheet: 2026 Pickleball (Main Sheet)**
+- **Last Voted** (Column M): Updated with current date when player votes
+- **Date Columns** (Column N+): Updated with 'y' or 'n' based on vote selections
+
+### Vote Processing
+
+1. Vote received → Record in Pickle Poll Log
+2. Update Last Voted date in main sheet
+3. Match poll options to date columns (by label, first match left-to-right)
+4. Update date columns with 'y' (voted) or 'n' (not voted)
+5. On Sundays: Delete entries older than 7 days
 
 ## Troubleshooting
 
-### "No poll data found in Firestore"
+### "No poll data found in Google Sheets"
 
 - Make sure the webhook is deployed and the URL is configured in GREEN-API
 - Check that at least one vote has been cast since the webhook was set up
-- Verify `GCP_PROJECT_ID` is set correctly in your `.env` file
+- Verify the Google Sheet is shared with the service account
 
 ### Webhook not receiving events
 
@@ -157,19 +137,28 @@ Collection: smad_polls
 
 ### Authentication errors
 
-- Make sure you're authenticated: `gcloud auth application-default login`
-- Check that the service account has Firestore access
+- Make sure the service account has access to the Google Sheet
+- The webhook uses default credentials (service account attached to Cloud Function)
+- For local testing: `gcloud auth application-default login`
+
+### Votes not updating date columns
+
+- Check that poll is less than 7 days old (older polls are ignored)
+- Verify date column labels match poll option names exactly
+- Check Cloud Function logs for matching errors
 
 ## Cost
 
 This setup should stay within Google Cloud's free tier:
 - Cloud Functions: 2 million invocations/month free
-- Firestore: 1 GB storage, 50K reads/day, 20K writes/day free
+- Google Sheets API: Free (subject to quota limits)
 
 For a small group like SMAD, costs should be $0.
 
 ## Important Notes
 
 1. **Only tracks future votes** - Votes cast before the webhook was set up cannot be retrieved
-2. **Poll options captured on first vote** - The webhook learns the poll options when the first vote comes in
-3. **Vote changes replace previous** - WhatsApp sends the complete new selection, not a diff
+2. **Poll age limit** - Votes from polls older than 7 days are ignored
+3. **Sunday cleanup** - Poll log entries older than 7 days are automatically deleted every Sunday
+4. **Vote changes create new rows** - Full audit trail is maintained in Pickle Poll Log
+5. **Column matching** - Date columns are matched by exact label match (first match from left to right)

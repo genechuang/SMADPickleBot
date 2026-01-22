@@ -7,7 +7,6 @@
 # 3. Set project: gcloud config set project YOUR_PROJECT_ID
 # 4. Enable APIs:
 #    gcloud services enable cloudfunctions.googleapis.com
-#    gcloud services enable firestore.googleapis.com
 #    gcloud services enable cloudbuild.googleapis.com
 #
 # Usage:
@@ -34,17 +33,6 @@ echo "Project: $PROJECT_ID"
 echo "Region: $REGION"
 echo "Function: $FUNCTION_NAME"
 echo ""
-
-# Check if Firestore is initialized
-echo "Checking Firestore..."
-FIRESTORE_DB=$(gcloud firestore databases list --project="$PROJECT_ID" 2>/dev/null | grep "(default)" || true)
-if [ -z "$FIRESTORE_DB" ]; then
-    echo "Firestore not initialized. Creating database..."
-    gcloud firestore databases create --project="$PROJECT_ID" --location="$REGION" --type=firestore-native
-    echo "Firestore database created."
-else
-    echo "Firestore already initialized."
-fi
 
 # Deploy the function
 echo ""
