@@ -17,6 +17,128 @@ Automated court booking script for The Athenaeum at Caltech. Books pickleball an
 - ✅ Screenshot capture at each step for debugging
 - ✅ Command-line arguments or environment variable configuration
 
+## Systems Architecture
+
+```mermaid
+---
+title: SMAD Picklebot Systems Architecture
+---
+graph TB
+    subgraph "Users"
+        U1[SMAD Group Members]
+        U2[Admin/Organizer]
+    end
+
+    subgraph "WhatsApp via GREEN-API"
+        WA[WhatsApp Group<br/>SMAD Pickleball]
+        GREENAPI[GREEN-API Service<br/>webhook.green-api.com]
+    end
+
+    subgraph "Google Cloud Platform"
+        GCF[Cloud Function Gen2<br/>smad-whatsapp-webhook]
+        FS[Firestore<br/>Poll State & Logs]
+    end
+
+    subgraph "Google Services"
+        SHEETS[Google Sheets API<br/>2026 Pickleball Sheet]
+        GMAIL[Gmail SMTP<br/>Email Notifications]
+    end
+
+    subgraph "Payment Services"
+        VENMO[Venmo API<br/>unofficial venmo-api]
+    end
+
+    subgraph "Athenaeum Court"
+        ATH[Athenaeum Portal<br/>Court Reservations]
+    end
+
+    subgraph "Local CLI Tools"
+        BOOKING[ath-booking.py<br/>Playwright/Selenium]
+        PAYMENT[payments-management.py<br/>Venmo Sync]
+        SMADCLI[smad-sheets.py<br/>Sheet Management]
+    end
+
+    subgraph "CI/CD"
+        GHA[GitHub Actions<br/>Cron Scheduler]
+        DEPLOY[Webhook Deployment<br/>deploy-webhook.yml]
+    end
+
+    subgraph "Configuration"
+        ENV[.env Files<br/>Credentials & Settings]
+        CREDS[Service Account JSON<br/>smad-credentials.json]
+    end
+
+    %% User Interactions
+    U1 -->|sends poll votes| WA
+    U2 -->|creates polls| WA
+    U2 -->|runs booking| BOOKING
+    U2 -->|manages payments| PAYMENT
+    U2 -->|updates sheet| SMADCLI
+
+    %% WhatsApp Flow
+    WA <-->|WebSocket/API| GREENAPI
+    GREENAPI -->|webhook POST| GCF
+
+    %% Cloud Function Processing
+    GCF -->|read/write poll state| FS
+    GCF -->|update attendance| SHEETS
+    GCF -->|log poll events| SHEETS
+    GCF -->|send notifications| GMAIL
+
+    %% Local CLI Operations
+    BOOKING -->|read booking config| ENV
+    BOOKING -->|authenticate & book| ATH
+    BOOKING -->|send booking status| GMAIL
+    BOOKING -->|update booking log| SHEETS
+
+    PAYMENT -->|fetch transactions| VENMO
+    PAYMENT -->|record payments| SHEETS
+    PAYMENT -->|read venmo handles| SHEETS
+    PAYMENT -->|read credentials| ENV
+
+    SMADCLI -->|read/write player data| SHEETS
+    SMADCLI -->|authenticate| CREDS
+
+    %% CI/CD Flow
+    GHA -->|triggers at midnight| BOOKING
+    GHA -->|reads schedule| ENV
+    DEPLOY -->|deploys function| GCF
+
+    %% Configuration
+    ENV -.->|provides secrets| GCF
+    CREDS -.->|authenticates| SHEETS
+    CREDS -.->|authenticates| GCF
+
+    %% Styling
+    classDef userClass fill:#e1f5ff,stroke:#0066cc,stroke-width:2px
+    classDef whatsappClass fill:#dcf8c6,stroke:#25d366,stroke-width:2px
+    classDef gcpClass fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    classDef googleClass fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    classDef paymentClass fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    classDef athenaeumClass fill:#fce4ec,stroke:#e91e63,stroke-width:2px
+    classDef cliClass fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    classDef cicdClass fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    classDef configClass fill:#f5f5f5,stroke:#757575,stroke-width:2px
+
+    class U1,U2 userClass
+    class WA,GREENAPI whatsappClass
+    class GCF,FS gcpClass
+    class SHEETS,GMAIL googleClass
+    class VENMO paymentClass
+    class ATH athenaeumClass
+    class BOOKING,PAYMENT,SMADCLI cliClass
+    class GHA,DEPLOY cicdClass
+    class ENV,CREDS configClass
+```
+
+The diagram above shows the complete system architecture including:
+- **WhatsApp Integration**: Poll creation and vote tracking via GREEN-API
+- **Google Cloud Function**: Real-time webhook for processing poll votes
+- **Google Sheets**: Central data store for player tracking, payments, and poll logs
+- **Venmo Integration**: Automated payment sync via unofficial Venmo API
+- **Court Booking**: Selenium-based automation for Athenaeum Court reservations
+- **CI/CD**: GitHub Actions for automated webhook deployment
+
 ## Documentation
 
 - [GitHub Actions Setup](GITHUB_ACTION_SETUP.md) - Automated daily court bookings with cron scheduling
