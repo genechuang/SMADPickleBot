@@ -30,9 +30,6 @@ import json
 import functions_framework
 from flask import Request
 
-# Add parent directory to path for shared module access
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
 from shared.venmo_sync import sync_venmo_to_sheet
 
 
