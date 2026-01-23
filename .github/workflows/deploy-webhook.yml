@@ -1,4 +1,4 @@
-name: Deploy Webhook to Cloud Functions
+name: Deploy Webhooks to Cloud Functions
 
 on:
   push:
@@ -11,14 +11,13 @@ on:
 env:
   PROJECT_ID: smad-pickleball
   REGION: us-west1
-  FUNCTION_NAME: smad-whatsapp-webhook
 
 jobs:
-  deploy:
+  deploy-whatsapp-poll-vote-webhook:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write  # Required for Workload Identity Federation
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -32,17 +31,9 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Enable required APIs
+      - name: Deploy WhatsApp Webhook
         run: |
-          gcloud services enable cloudfunctions.googleapis.com \
-            cloudbuild.googleapis.com \
-            run.googleapis.com \
-            artifactregistry.googleapis.com \
-            --project=${{ env.PROJECT_ID }}
-
-      - name: Deploy Cloud Function
-        run: |
-          gcloud functions deploy ${{ env.FUNCTION_NAME }} \
+          gcloud functions deploy smad-whatsapp-webhook \
             --project=${{ env.PROJECT_ID }} \
             --region=${{ env.REGION }} \
             --runtime=python311 \
@@ -56,13 +47,53 @@ jobs:
 
       - name: Get function URL
         run: |
-          URL=$(gcloud functions describe ${{ env.FUNCTION_NAME }} \
+          URL=$(gcloud functions describe smad-whatsapp-webhook \
             --project=${{ env.PROJECT_ID }} \
             --region=${{ env.REGION }} \
             --gen2 \
             --format='value(serviceConfig.uri)')
-          echo "## Webhook Deployed! :rocket:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## WhatsApp Webhook Deployed!" >> $GITHUB_STEP_SUMMARY
           echo "**URL:** \`$URL\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Configure this URL in GREEN-API webhook settings." >> $GITHUB_STEP_SUMMARY
+
+  deploy-venmo-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy Venmo Sync Trigger
+        run: |
+          gcloud functions deploy venmo-sync-trigger \
+            --project=${{ env.PROJECT_ID }} \
+            --region=${{ env.REGION }} \
+            --runtime=python311 \
+            --gen2 \
+            --source=./webhook/venmo-trigger \
+            --entry-point=venmo_email_trigger \
+            --trigger-topic=venmo-payment-emails \
+            --memory=512MB \
+            --timeout=60s \
+            --set-env-vars "SMAD_SPREADSHEET_ID=1w4_-hnykYgcs6nyyDkie9CwBRwri7aJUblD2mxgNUHY,SMAD_SHEET_NAME=2026 Pickleball" \
+            --set-secrets "VENMO_ACCESS_TOKEN=VENMO_ACCESS_TOKEN:latest,SMAD_GOOGLE_CREDENTIALS_JSON=SMAD_GOOGLE_CREDENTIALS_JSON:latest,GREENAPI_INSTANCE_ID=GREENAPI_INSTANCE_ID:latest,GREENAPI_API_TOKEN=GREENAPI_API_TOKEN:latest"
+
+      - name: Verify deployment
+        run: |
+          STATE=$(gcloud functions describe venmo-sync-trigger \
+            --project=${{ env.PROJECT_ID }} \
+            --region=${{ env.REGION }} \
+            --gen2 \
+            --format='value(state)')
+          echo "## Venmo Sync Trigger Deployed!" >> $GITHUB_STEP_SUMMARY
+          echo "**State:** $STATE" >> $GITHUB_STEP_SUMMARY
