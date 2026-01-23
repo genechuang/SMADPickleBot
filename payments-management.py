@@ -456,7 +456,7 @@ def format_phone_for_whatsapp(phone: str) -> str:
     return f"{digits}@c.us"
 
 
-def send_whatsapp_thank_you(wa_client, player_name: str, first_name: str, mobile: str, amount: float) -> bool:
+def send_whatsapp_thank_you(wa_client, player_name: str, first_name: str, mobile: str, amount: float, balance: float) -> bool:
     """
     Send a WhatsApp thank you DM to a player for their payment.
 
@@ -466,6 +466,7 @@ def send_whatsapp_thank_you(wa_client, player_name: str, first_name: str, mobile
         first_name: Player's first name
         mobile: Player's mobile number
         amount: Payment amount
+        balance: Player's current balance after payment
 
     Returns:
         True if successful, False otherwise
@@ -482,7 +483,7 @@ def send_whatsapp_thank_you(wa_client, player_name: str, first_name: str, mobile
 
 Thank you for your payment of *${amount:.2f}*!
 
-Your payment has been recorded.
+Your balance is now: *${balance:.2f}*
 
 Thanks,
 {PICKLEBOT_SIGNATURE}"""
@@ -600,7 +601,7 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50, send_tha
     payments_recorded = 0
     payments_skipped = 0
     payments_unmatched = 0
-    recorded_payment_details = []  # Track (player_name, first_name, mobile, amount) for thank you messages
+    recorded_payment_details = []  # Track (player_name, first_name, mobile, amount, balance) for thank you messages
 
     for txn in transactions:
         # Skip if already recorded
@@ -659,9 +660,18 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50, send_tha
         row_index, first_name, last_name = player_info
         full_name = f"{first_name} {last_name}"
 
-        # Get mobile number for thank you message (if available)
+        # Get mobile number and balance for thank you message (if available)
         player_row = main_data[row_index]
         mobile = player_row[COL_MOBILE] if len(player_row) > COL_MOBILE else ''
+
+        # Parse balance (format: "$X.XX" or "X.XX" or just a number)
+        balance = 0.0
+        if len(player_row) > COL_BALANCE and player_row[COL_BALANCE]:
+            try:
+                balance_str = str(player_row[COL_BALANCE]).replace('$', '').replace(',', '').strip()
+                balance = float(balance_str)
+            except (ValueError, AttributeError):
+                balance = 0.0
 
         # Parse transaction date (Unix timestamp in seconds) - MM/DD/YYYY format
         # Venmo API returns timestamps that appear to be local time stored as UTC
@@ -711,7 +721,7 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50, send_tha
                 # Add to existing_ids to prevent duplicates within this batch
                 existing_ids.add(txn_id)
                 # Track for thank you message
-                recorded_payment_details.append((full_name, first_name, mobile, amount))
+                recorded_payment_details.append((full_name, first_name, mobile, amount, balance))
             else:
                 print(f"  [ERROR] Failed to record: {full_name} - ${amount:.2f}")
 
@@ -731,8 +741,8 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50, send_tha
         if wa_client:
             print(f"\n=== Sending Thank You Messages ===")
             thank_you_sent = 0
-            for player_name, first_name, mobile, amount in recorded_payment_details:
-                if send_whatsapp_thank_you(wa_client, player_name, first_name, mobile, amount):
+            for player_name, first_name, mobile, amount, balance in recorded_payment_details:
+                if send_whatsapp_thank_you(wa_client, player_name, first_name, mobile, amount, balance):
                     thank_you_sent += 1
             print(f"[DONE] Sent {thank_you_sent}/{len(recorded_payment_details)} thank you messages")
         else:
