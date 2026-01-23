@@ -10,7 +10,7 @@ Tracks and manages payments from SMAD group members. Supports:
 
 Usage:
     python payments-management.py record "John Doe" 50.00 --method venmo
-    python payments-management.py sync-venmo [--dry-run]
+    python payments-management.py sync-venmo [--dry-run] [--no-thank-you]
     python payments-management.py list [--player "John Doe"] [--days 30]
     python payments-management.py history "John Doe"
     python payments-management.py setup-venmo
@@ -53,6 +53,10 @@ MAIN_SHEET_NAME = os.environ.get('SMAD_SHEET_NAME', '2026 Pickleball')
 PAYMENT_LOG_SHEET_NAME = os.environ.get('PAYMENT_LOG_SHEET_NAME', 'Payment Log')
 CREDENTIALS_FILE = os.environ.get('GOOGLE_CREDENTIALS_FILE', 'smad-credentials.json')
 VENMO_ACCESS_TOKEN = os.environ.get('VENMO_ACCESS_TOKEN', '')
+
+# WhatsApp Configuration
+GREENAPI_INSTANCE_ID = os.environ.get('GREENAPI_INSTANCE_ID', '')
+GREENAPI_API_TOKEN = os.environ.get('GREENAPI_API_TOKEN', '')
 
 # Column indices for main sheet - import from smad-sheets.py (single source of truth)
 import importlib.util
@@ -427,6 +431,74 @@ def show_payment_history(sheets, player_name: str):
     list_payments(sheets, player_name=player_name)
 
 
+def get_whatsapp_client():
+    """Initialize and return WhatsApp GREEN-API client."""
+    if not GREENAPI_INSTANCE_ID or not GREENAPI_API_TOKEN:
+        return None
+
+    try:
+        from whatsapp_api_client_python import API
+        return API.GreenAPI(GREENAPI_INSTANCE_ID, GREENAPI_API_TOKEN)
+    except (ImportError, Exception):
+        return None
+
+
+def format_phone_for_whatsapp(phone: str) -> str:
+    """Convert phone number to WhatsApp format (digits only + @c.us)."""
+    if not phone:
+        return ''
+    # Remove all non-digit characters
+    digits = ''.join(c for c in phone if c.isdigit())
+    if not digits:
+        return ''
+    # WhatsApp format: phone@c.us
+    return f"{digits}@c.us"
+
+
+def send_whatsapp_thank_you(wa_client, player_name: str, first_name: str, mobile: str, amount: float) -> bool:
+    """
+    Send a WhatsApp thank you DM to a player for their payment.
+
+    Args:
+        wa_client: GREEN-API client
+        player_name: Full player name
+        first_name: Player's first name
+        mobile: Player's mobile number
+        amount: Payment amount
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if not wa_client:
+        return False
+
+    phone_id = format_phone_for_whatsapp(mobile)
+    if not phone_id:
+        print(f"  [SKIP WhatsApp] {player_name} - no valid phone number")
+        return False
+
+    message = f"""Hi {first_name}!
+
+Thank you for your payment of *${amount:.2f}*!
+
+Your payment has been recorded.
+
+Thanks,
+PickleBot 🤖"""
+
+    try:
+        response = wa_client.sending.sendMessage(phone_id, message)
+        if response.code == 200:
+            print(f"  [OK WhatsApp] Sent thank you to {player_name} ({phone_id})")
+            return True
+        else:
+            print(f"  [WARN WhatsApp] Failed to send to {player_name}: {response.data}")
+            return False
+    except Exception as e:
+        print(f"  [WARN WhatsApp] Failed to send to {player_name}: {e}")
+        return False
+
+
 def setup_venmo_token():
     """Interactive setup for Venmo access token."""
     print("\n=== Venmo Access Token Setup ===\n")
@@ -462,11 +534,18 @@ def setup_venmo_token():
         return False
 
 
-def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50):
+def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50, send_thank_you: bool = True):
     """
     Sync payments from Venmo to the Payment Log sheet.
 
     Matches Venmo senders by username to the Venmo column in the main sheet.
+    Optionally sends WhatsApp thank you messages to payers.
+
+    Args:
+        sheets: Google Sheets service
+        dry_run: If True, don't record payments or send messages
+        limit: Max transactions to fetch
+        send_thank_you: If True, send WhatsApp thank you DMs to payers
     """
     if not VENMO_ACCESS_TOKEN:
         print("ERROR: VENMO_ACCESS_TOKEN not set.")
@@ -520,6 +599,7 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50):
     payments_recorded = 0
     payments_skipped = 0
     payments_unmatched = 0
+    recorded_payment_details = []  # Track (player_name, first_name, mobile, amount) for thank you messages
 
     for txn in transactions:
         # Skip if already recorded
@@ -578,6 +658,10 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50):
         row_index, first_name, last_name = player_info
         full_name = f"{first_name} {last_name}"
 
+        # Get mobile number for thank you message (if available)
+        player_row = main_data[row_index]
+        mobile = player_row[COL_MOBILE] if len(player_row) > COL_MOBILE else ''
+
         # Parse transaction date (Unix timestamp in seconds) - MM/DD/YYYY format
         # Venmo API returns timestamps that appear to be local time stored as UTC
         # (i.e., 8 hours ahead of actual Pacific Time), so we interpret directly as local
@@ -625,6 +709,8 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50):
                 payments_recorded += 1
                 # Add to existing_ids to prevent duplicates within this batch
                 existing_ids.add(txn_id)
+                # Track for thank you message
+                recorded_payment_details.append((full_name, first_name, mobile, amount))
             else:
                 print(f"  [ERROR] Failed to record: {full_name} - ${amount:.2f}")
 
@@ -637,6 +723,22 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50):
     if payments_unmatched > 0:
         print(f"\n[TIP] To match unmatched payments, add the payer's Venmo username")
         print(f"      (e.g., @john-doe) to their row in the Venmo column (Column E).")
+
+    # Send WhatsApp thank you messages to newly recorded payments
+    if not dry_run and send_thank_you and recorded_payment_details:
+        wa_client = get_whatsapp_client()
+        if wa_client:
+            print(f"\n=== Sending Thank You Messages ===")
+            thank_you_sent = 0
+            for player_name, first_name, mobile, amount in recorded_payment_details:
+                if send_whatsapp_thank_you(wa_client, player_name, first_name, mobile, amount):
+                    thank_you_sent += 1
+            print(f"[DONE] Sent {thank_you_sent}/{len(recorded_payment_details)} thank you messages")
+        else:
+            print(f"\n[INFO] WhatsApp not configured - skipping thank you messages")
+            print(f"       Set GREENAPI_INSTANCE_ID and GREENAPI_API_TOKEN to enable")
+    elif not dry_run and not send_thank_you and recorded_payment_details:
+        print(f"\n[INFO] Skipping thank you messages (--no-thank-you flag used)")
 
     return True
 
@@ -684,6 +786,8 @@ Environment variables:
                              help='Show what would be synced without recording')
     sync_parser.add_argument('--limit', type=int, default=50,
                              help='Max transactions to fetch (default: 50)')
+    sync_parser.add_argument('--no-thank-you', action='store_true',
+                             help='Skip sending WhatsApp thank you messages')
 
     # list
     list_parser = subparsers.add_parser('list', help='List payments')
@@ -723,7 +827,7 @@ Environment variables:
             payment_date=args.date
         )
     elif args.command == 'sync-venmo':
-        sync_venmo_payments(sheets, dry_run=args.dry_run, limit=args.limit)
+        sync_venmo_payments(sheets, dry_run=args.dry_run, limit=args.limit, send_thank_you=not args.no_thank_you)
     elif args.command == 'list':
         list_payments(sheets, player_name=args.player, days=args.days)
     elif args.command == 'history':
