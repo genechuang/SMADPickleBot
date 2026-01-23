@@ -1237,6 +1237,9 @@ def send_vote_reminders(wa_client, players: List[Dict], dry_run: bool = False) -
         message = f"""Hi {player['first_name']}!
 REMINDER: Vote in this week's SMAD pickleball availability poll so Gene can plan the games for this week.
 Check this week's poll pinned to the top of the group: {group_link_text}
+
+If you don't want to receive these daily notifications, you can either vote when the new poll comes out on Sunday, or let me know you want to be put on vacation mode.
+
 Thanks,
 {PICKLEBOT_SIGNATURE}"""
 
