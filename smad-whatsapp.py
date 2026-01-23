@@ -1236,7 +1236,7 @@ def send_vote_reminders(wa_client, players: List[Dict], dry_run: bool = False) -
         group_link_text = f"\n\n{SMAD_GROUP_URL}" if SMAD_GROUP_URL else ""
         message = f"""Hi {player['first_name']}!
 REMINDER: Vote in this week's SMAD pickleball availability poll so Gene can plan the games for this week.
-Check the latest poll in the SMAD Pickleball group: {group_link_text}
+Check this week's poll pinned to the top of the group: {group_link_text}
 Thanks,
 {PICKLEBOT_SIGNATURE}"""
 
@@ -1303,7 +1303,7 @@ The following {len(not_voted)} players haven't voted in this week's poll yet:
 
 {names_list}
 
-Please vote in this week's poll so I can plan the games for this week!
+Please vote in this week's poll pinned to the top of the group so I can plan the games for this week!
 
 {PICKLEBOT_SIGNATURE}"""
 
