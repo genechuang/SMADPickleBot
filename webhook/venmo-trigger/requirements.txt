@@ -15,5 +15,8 @@ google-api-python-client==2.*
 # Timezone support
 pytz==2024.1
 
+# WhatsApp GREEN-API
+whatsapp-api-client-python==0.0.46
+
 # Flask (included in functions-framework but listed for clarity)
 flask==3.*

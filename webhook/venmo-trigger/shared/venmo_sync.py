@@ -69,6 +69,61 @@ PAYMENT_LOG_HEADERS = ['Date', 'Player Name', 'Venmo Username', 'Amount', 'Metho
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
+PICKLEBOT_SIGNATURE = "Picklebot🥒🏓🤖"
+
+
+def format_phone_for_whatsapp(phone: str) -> str:
+    """Convert phone number to WhatsApp format (digits only + @c.us)."""
+    if not phone:
+        return ''
+    digits = ''.join(c for c in phone if c.isdigit())
+    if not digits:
+        return ''
+    return f"{digits}@c.us"
+
+
+def get_whatsapp_client(instance_id: str, api_token: str):
+    """Initialize and return WhatsApp GREEN-API client."""
+    if not instance_id or not api_token:
+        return None
+    try:
+        from whatsapp_api_client_python import API
+        return API.GreenAPI(instance_id, api_token)
+    except (ImportError, Exception):
+        return None
+
+
+def send_whatsapp_thank_you(wa_client, player_name: str, first_name: str, mobile: str, amount: float, balance: float) -> bool:
+    """Send a WhatsApp thank you DM to a player for their payment."""
+    if not wa_client:
+        return False
+
+    phone_id = format_phone_for_whatsapp(mobile)
+    if not phone_id:
+        print(f"  [SKIP WhatsApp] {player_name} - no valid phone number")
+        return False
+
+    message = f"""Hi {first_name}!
+
+Thank you for your payment of *${amount:.2f}*!
+
+Your balance is now: *${balance:.2f}*
+
+Thanks,
+{PICKLEBOT_SIGNATURE}"""
+
+    try:
+        response = wa_client.sending.sendMessage(phone_id, message)
+        if response.code == 200:
+            print(f"  [OK WhatsApp] Sent thank you to {player_name} ({phone_id})")
+            return True
+        else:
+            print(f"  [WARN WhatsApp] Failed to send to {player_name}: {response.data}")
+            return False
+    except Exception as e:
+        print(f"  [WARN WhatsApp] Failed to send to {player_name}: {e}")
+        return False
+
 
 def get_sheets_service(google_credentials):
     """
@@ -240,7 +295,9 @@ def sync_venmo_to_sheet(
     main_sheet_name: str = DEFAULT_MAIN_SHEET_NAME,
     payment_log_sheet_name: str = DEFAULT_PAYMENT_LOG_SHEET_NAME,
     limit: int = 50,
-    dry_run: bool = False
+    dry_run: bool = False,
+    greenapi_instance_id: str = '',
+    greenapi_api_token: str = ''
 ) -> Tuple[int, int, int]:
     """
     Sync Venmo payments to Google Sheets Payment Log.
@@ -298,6 +355,7 @@ def sync_venmo_to_sheet(
     payments_recorded = 0
     payments_skipped = 0
     payments_unmatched = 0
+    recorded_payment_details = []  # (full_name, first_name, mobile, amount, balance)
 
     for txn in transactions:
         # Skip if already recorded
@@ -391,6 +449,16 @@ def sync_venmo_to_sheet(
                 payments_recorded += 1
                 # Add to existing_ids to prevent duplicates within this batch
                 existing_ids.add(txn_id)
+                # Collect details for WhatsApp thank you
+                player_row = main_data[row_index] if row_index < len(main_data) else []
+                mobile = player_row[COL_MOBILE] if len(player_row) > COL_MOBILE else ''
+                balance = 0.0
+                if len(player_row) > COL_BALANCE and player_row[COL_BALANCE]:
+                    try:
+                        balance = float(str(player_row[COL_BALANCE]).replace('$', '').replace(',', '').strip())
+                    except (ValueError, AttributeError):
+                        balance = 0.0
+                recorded_payment_details.append((full_name, first_name, mobile, amount, balance))
             else:
                 print(f"  [SKIP] {full_name} - ${amount:.2f} (duplicate)")
                 payments_skipped += 1
@@ -404,5 +472,16 @@ def sync_venmo_to_sheet(
     if payments_unmatched > 0:
         print(f"\n[TIP] To match unmatched payments, add the payer's Venmo username")
         print(f"      (e.g., @john-doe) to their row in the Venmo column (Column F).")
+
+    # Send WhatsApp thank you messages
+    if not dry_run and recorded_payment_details and (greenapi_instance_id and greenapi_api_token):
+        wa_client = get_whatsapp_client(greenapi_instance_id, greenapi_api_token)
+        if wa_client:
+            print(f"\n=== Sending Thank You Messages ===")
+            thank_you_sent = 0
+            for player_name, fname, mobile, amt, bal in recorded_payment_details:
+                if send_whatsapp_thank_you(wa_client, player_name, fname, mobile, amt, bal):
+                    thank_you_sent += 1
+            print(f"[DONE] Sent {thank_you_sent}/{len(recorded_payment_details)} thank you messages")
 
     return (payments_recorded, payments_skipped, payments_unmatched)

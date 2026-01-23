@@ -72,6 +72,8 @@ def venmo_email_trigger(cloud_event: CloudEvent):
     google_creds_json = os.environ.get('SMAD_GOOGLE_CREDENTIALS_JSON')
     main_sheet = os.environ.get('SMAD_SHEET_NAME', '2026 Pickleball')
     payment_log_sheet = os.environ.get('PAYMENT_LOG_SHEET_NAME', 'Payment Log')
+    greenapi_instance_id = os.environ.get('GREENAPI_INSTANCE_ID', '')
+    greenapi_api_token = os.environ.get('GREENAPI_API_TOKEN', '')
 
     # Validate required configuration
     if not venmo_token:
@@ -98,7 +100,9 @@ def venmo_email_trigger(cloud_event: CloudEvent):
             main_sheet_name=main_sheet,
             payment_log_sheet_name=payment_log_sheet,
             limit=50,  # Check last 50 transactions
-            dry_run=False
+            dry_run=False,
+            greenapi_instance_id=greenapi_instance_id,
+            greenapi_api_token=greenapi_api_token
         )
 
         print(f"[SUCCESS] Sync completed: {recorded} recorded, {skipped} skipped, {unmatched} unmatched")
