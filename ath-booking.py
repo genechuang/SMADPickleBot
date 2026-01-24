@@ -1360,8 +1360,9 @@ async def wait_until_booking_time(target_time_str='00:01:00', timezone_name='Ame
     # Calculate seconds to wait
     wait_seconds = (target_time - now_tz).total_seconds()
 
-    # SAFETY: Cap wait time at exactly grace period to prevent waiting 24 hours due to logic bugs
-    max_wait_seconds = grace_period_minutes * 60
+    # SAFETY: Cap wait time at 15 minutes to prevent waiting 24 hours due to logic bugs.
+    # Normal operation: invoke at ~23:50, target at ~00:01 = ~11 min wait. 15 min covers this with buffer.
+    max_wait_seconds = 15 * 60
     if wait_seconds > max_wait_seconds:
         log(f"\n! WARNING: Calculated wait time ({wait_seconds/60:.1f} minutes) exceeds safety cap ({max_wait_seconds/60:.1f} minutes)", 'INFO')
         log(f"! This likely indicates a logic error. Capping wait time to {max_wait_seconds/60:.1f} minutes.", 'INFO')
