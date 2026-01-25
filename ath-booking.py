@@ -33,6 +33,74 @@ from email_service import send_booking_notification
 # Load environment variables from .env file
 load_dotenv()
 
+# WhatsApp Admin Group notification (optional)
+GREENAPI_INSTANCE_ID = os.environ.get('GREENAPI_INSTANCE_ID', '')
+GREENAPI_API_TOKEN = os.environ.get('GREENAPI_API_TOKEN', '')
+ADMIN_GROUP_ID = os.environ.get('ADMIN_DINKERS_WHATSAPP_GROUP_ID', '')
+
+
+def send_booking_whatsapp_notification(booking_summary: dict, booking_details: list, log_func=None):
+    """
+    Send booking summary to Admin Dinkers WhatsApp group.
+
+    Args:
+        booking_summary: Dictionary with booking results
+        booking_details: List of booking detail strings
+        log_func: Optional logging function
+    """
+    if not all([GREENAPI_INSTANCE_ID, GREENAPI_API_TOKEN, ADMIN_GROUP_ID]):
+        if log_func:
+            log_func("WhatsApp notification skipped (credentials not configured)", 'INFO')
+        return
+
+    try:
+        from whatsapp_api_client_python import API
+    except ImportError:
+        if log_func:
+            log_func("WhatsApp notification skipped (library not installed)", 'INFO')
+        return
+
+    # Build message
+    success = booking_summary.get('successful', 0)
+    failed = booking_summary.get('failed', 0)
+    total = booking_summary.get('total_attempts', 0)
+    booking_date = booking_summary.get('booking_date', 'Unknown')
+
+    if success == total and total > 0:
+        status_icon = "[OK]"
+        status_text = "All bookings successful!"
+    elif success > 0:
+        status_icon = "[WARN]"
+        status_text = f"Partial success: {success}/{total} bookings completed"
+    else:
+        status_icon = "[ERROR]"
+        status_text = "All bookings failed!"
+
+    message = f"*Court Booking Summary*\n\n"
+    message += f"{status_icon} {status_text}\n\n"
+    message += f"*Date:* {booking_date}\n"
+    message += f"*Results:* {success} successful, {failed} failed\n\n"
+
+    if booking_details:
+        message += "*Details:*\n"
+        for detail in booking_details:
+            message += f"• {detail}\n"
+
+    message += f"\nPicklebot🥒🏓🤖"
+
+    try:
+        wa_client = API.GreenAPI(GREENAPI_INSTANCE_ID, GREENAPI_API_TOKEN)
+        response = wa_client.sending.sendMessage(ADMIN_GROUP_ID, message)
+        if response.code == 200:
+            if log_func:
+                log_func("WhatsApp notification sent to Admin Dinkers group", 'INFO')
+        else:
+            if log_func:
+                log_func(f"WhatsApp notification failed: {response.data}", 'ERROR')
+    except Exception as e:
+        if log_func:
+            log_func(f"WhatsApp notification error: {e}", 'ERROR')
+
 
 # ==================== TWELVE-FACTOR APP UTILITIES ====================
 
@@ -1579,6 +1647,14 @@ async def main(booking_date=None, booking_time=None, court_name=None, booking_du
             booking_details=booking_details,
             booking_date=BOOKING_DATE,
             screenshot_files=screenshot_files,
+            log_func=log
+        )
+
+        # Send WhatsApp notification to Admin Dinkers group
+        log("\n=== Sending WhatsApp Notification ===", 'INFO')
+        send_booking_whatsapp_notification(
+            booking_summary=booking_summary,
+            booking_details=booking_details,
             log_func=log
         )
 

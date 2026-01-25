@@ -63,6 +63,7 @@ GREENAPI_INSTANCE_ID = os.environ.get('GREENAPI_INSTANCE_ID', '')
 GREENAPI_API_TOKEN = os.environ.get('GREENAPI_API_TOKEN', '')
 SMAD_GROUP_ID = os.environ.get('SMAD_WHATSAPP_GROUP_ID', '')  # Format: 123456789@g.us
 SMAD_GROUP_URL = os.environ.get('SMAD_WHATSAPP_GROUP_URL', '')  # Group invite link
+ADMIN_GROUP_ID = os.environ.get('ADMIN_DINKERS_WHATSAPP_GROUP_ID', '')  # Admin group for summaries
 
 # Configuration - Google Sheets (reuse from smad-sheets.py)
 SPREADSHEET_ID = os.environ.get('SMAD_SPREADSHEET_ID', '1w4_-hnykYgcs6nyyDkie9CwBRwri7aJUblD2mxgNUHY')
@@ -479,6 +480,47 @@ def send_balance_summary_to_group(wa_client, players: List[Dict], dry_run: bool 
             return False
     except Exception as e:
         print(f"[ERROR] Failed to send to group: {e}")
+        return False
+
+
+def send_admin_summary(wa_client, summary_type: str, details: str, dry_run: bool = False) -> bool:
+    """
+    Send a summary message to the Admin Dinkers group.
+
+    Args:
+        wa_client: WhatsApp API client
+        summary_type: Type of summary (e.g., "Payment Reminders", "Vote Reminders")
+        details: The summary details to send
+        dry_run: If True, print message without sending
+
+    Returns:
+        True if sent successfully, False otherwise
+    """
+    if not ADMIN_GROUP_ID:
+        # Admin group not configured, silently skip
+        return True
+
+    message = f"*{summary_type} Summary*\n\n{details}\n\n{PICKLEBOT_SIGNATURE}"
+
+    if dry_run:
+        print(f"\n[DRY RUN] Would send to Admin Dinkers group ({ADMIN_GROUP_ID}):")
+        # Handle Windows console encoding issues with emojis
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            print(message.encode('ascii', 'replace').decode('ascii'))
+        return True
+
+    try:
+        response = wa_client.sending.sendMessage(ADMIN_GROUP_ID, message)
+        if response.code == 200:
+            print(f"\n[OK] Summary sent to Admin Dinkers group")
+            return True
+        else:
+            print(f"\n[ERROR] Failed to send to admin group: {response.data}")
+            return False
+    except Exception as e:
+        print(f"\n[ERROR] Failed to send to admin group: {e}")
         return False
 
 
@@ -1341,7 +1383,27 @@ def cmd_send_vote_reminders(args):
     sheets = get_sheets_service()
     players = get_player_data(sheets)
 
+    # Get non-voters for admin summary (same logic as send_vote_reminders)
+    poll_created = get_poll_created_date()
+    non_voters = []
+    if poll_created:
+        for player in players:
+            if player.get('on_vacation', False):
+                continue
+            last_voted_str = player.get('last_voted', '')
+            last_voted = parse_date_string(last_voted_str)
+            if last_voted is None or last_voted < poll_created:
+                non_voters.append(player['name'])
+
+    # Send the reminders
     send_vote_reminders(wa_client, players, dry_run=args.dry_run)
+
+    # Send summary to admin group
+    if non_voters:
+        details = f"Sent vote reminders to {len(non_voters)} players:\n" + "\n".join(f"• {name}" for name in non_voters)
+    else:
+        details = "Everyone has voted! No reminders sent."
+    send_admin_summary(wa_client, "Vote Reminders", details, dry_run=args.dry_run)
 
 
 def cmd_send_group_vote_reminder(args):
@@ -1380,6 +1442,16 @@ def cmd_send_balance_dm(args):
                 skipped += 1
 
         print(f"\n[DONE] Sent: {sent}, Skipped: {skipped}")
+
+        # Send summary to admin group
+        if players_with_balance:
+            total = sum(p['balance'] for p in players_with_balance)
+            details = f"Sent payment reminders to {len(players_with_balance)} players:\n"
+            details += "\n".join(f"• {p['name']}: ${p['balance']:.2f}" for p in players_with_balance)
+            details += f"\n\n*Total Outstanding: ${total:.2f}*"
+        else:
+            details = "No outstanding balances! Everyone is paid up."
+        send_admin_summary(wa_client, "Payment Reminders", details, dry_run=args.dry_run)
     else:
         # Send to specific player
         player = find_player(players, args.player_name)
