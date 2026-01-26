@@ -2,28 +2,23 @@ name: Daily Court Booking
 
 on:
   schedule:
-    # Primary: Runs at 11:50 PM PST daily (7:50 AM UTC) to warm up before 12:00:15 AM booking time
-    # Scheduled 10 minutes early to avoid midnight GitHub Actions contention (2-5 min delays common)
-    # Script has 10-minute grace period - if it starts late, it books immediately instead of waiting 24 hours
-    # Format: minute hour day month weekday
-    # The workflow file uses UTC time. To convert your local time to UTC:
-    # - **Pacific Time (PDT)**: 11:50 PM PDT = 6:50 AM UTC next day
-    # - **Pacific Time (PST)**: 11:50 PM PST = 7:50 AM UTC next day
-    # Note: During PDT (March-November), use '50 6 * * *'
-    # Note: During PST (November-March), use '50 7 * * *'
-    - cron: '45 7 * * *'  # 11:50 PM PST (adjust for PDT/PST)
-
-    # Backup: Runs at 12:01 AM PST daily (8:01 AM UTC) as fallback
-    # If primary trigger didn't complete bookings (e.g., courts not released yet), this retries
-    # - **Pacific Time (PDT)**: 12:01 AM PDT = 7:01 AM UTC same day
-    # - **Pacific Time (PST)**: 12:01 AM PST = 8:01 AM UTC same day
-    # Note: During PDT (March-November), use '01 7 * * *'
-    # Note: During PST (November-March), use '01 8 * * *'
-    - cron: '00 8 * * *'  # 12:01 AM PST (adjust for PDT/PST)
+    # Court booking: 11:45 PM PST (7:45 AM UTC next day)
+    - cron: '45 7 * * *'
+    # Court booking backup: 12:00 AM PST (8:00 AM UTC)
+    - cron: '00 8 * * *'
+    # Payment/voting reminders: 11:24 AM PST (7:24 PM UTC) - for debugging
+    - cron: '24 19 * * *'
 
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
+      job_type:
+        description: 'Which job to run'
+        type: choice
+        options:
+          - court-booking
+          - payment-reminders
+        default: 'court-booking'
       booking_date_time:
         description: 'Booking date and time (MM/DD/YYYY HH:MM AM/PM)'
         required: false
@@ -44,10 +39,19 @@ on:
         description: 'Safety mode (True/False) - True stops before booking'
         required: false
         default: 'True'
+      dry_run:
+        description: 'Dry run mode for payment reminders'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   book-court:
     runs-on: ubuntu-latest
+    if: >
+      github.event.schedule == '45 7 * * *' ||
+      github.event.schedule == '00 8 * * *' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'court-booking')
 
     steps:
     - name: Checkout repository
@@ -117,3 +121,88 @@ jobs:
       if: failure()
       run: |
         echo "Booking failed! Check the logs and screenshots."
+
+  payment-reminders:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.schedule == '24 19 * * *' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'payment-reminders')
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+
+    - name: Create .env file from secrets and variables
+      run: |
+        # WhatsApp credentials
+        echo "GREENAPI_INSTANCE_ID=${{ secrets.GREENAPI_INSTANCE_ID }}" >> .env
+        echo "GREENAPI_API_TOKEN=${{ secrets.GREENAPI_API_TOKEN }}" >> .env
+        echo "SMAD_WHATSAPP_GROUP_ID=${{ vars.SMAD_WHATSAPP_GROUP_ID }}" >> .env
+        echo "SMAD_WHATSAPP_GROUP_URL=${{ vars.SMAD_WHATSAPP_GROUP_URL }}" >> .env
+        echo "ADMIN_DINKERS_WHATSAPP_GROUP_ID=${{ vars.ADMIN_DINKERS_WHATSAPP_GROUP_ID }}" >> .env
+
+        # Google Sheets credentials
+        echo "SMAD_SPREADSHEET_ID=${{ vars.SMAD_SPREADSHEET_ID }}" >> .env
+        echo "SMAD_SHEET_NAME=${{ vars.SMAD_SHEET_NAME }}" >> .env
+
+        # Email notification
+        echo "GMAIL_USERNAME=${{ secrets.GMAIL_USERNAME }}" >> .env
+        echo "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" >> .env
+
+        # Venmo credentials
+        echo "VENMO_ACCESS_TOKEN=${{ secrets.VENMO_ACCESS_TOKEN }}" >> .env
+
+        # Booking list (for poll generation context)
+        echo "BOOKING_LIST=${{ vars.BOOKING_LIST }}" >> .env
+
+    - name: Create Google credentials file
+      run: |
+        echo '${{ secrets.SMAD_GOOGLE_CREDENTIALS_JSON }}' > smad-credentials.json
+
+    - name: Set dry run flag
+      id: dry_run
+      run: |
+        if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+          echo "flag=--dry-run" >> $GITHUB_OUTPUT
+        else
+          echo "flag=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Run payment and voting reminders
+      run: |
+        DRY_RUN="${{ steps.dry_run.outputs.flag }}"
+
+        echo "=========================================="
+        echo "Daily WhatsApp Automation"
+        echo "Time (PST): $(TZ='America/Los_Angeles' date)"
+        echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+        echo "=========================================="
+
+        echo ""
+        echo "=== Step 1: Syncing Venmo Payments ==="
+        python -u payments-management.py sync-venmo $DRY_RUN
+
+        echo ""
+        echo "=== Step 2: Sending Payment Reminders ==="
+        python -u smad-whatsapp.py $DRY_RUN send-balance-dm all
+
+        echo ""
+        echo "=== Step 3: Sending Vote Reminders ==="
+        python -u smad-whatsapp.py $DRY_RUN send-vote-reminders
+
+        echo ""
+        echo "=== Daily Automation Complete ==="
+
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "Daily WhatsApp automation failed! Check the logs."
