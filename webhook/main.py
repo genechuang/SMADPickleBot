@@ -33,6 +33,10 @@ import sys
 from datetime import datetime, timezone, timedelta
 
 import functions_framework
+import pytz
+
+# PST timezone for all date/time operations
+PST = pytz.timezone('America/Los_Angeles')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +56,9 @@ SPREADSHEET_ID = os.environ.get('SMAD_SPREADSHEET_ID', '1w4_-hnykYgcs6nyyDkie9Cw
 POLL_LOG_SHEET_NAME = os.environ.get('POLL_LOG_SHEET_NAME', 'Pickle Poll Log')
 MAIN_SHEET_NAME = os.environ.get('SMAD_SHEET_NAME', '2026 Pickleball')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+
+# WhatsApp group ID to process votes from (only process votes from SMAD group, not Admin Dinkers)
+SMAD_WHATSAPP_GROUP_ID = os.environ.get('SMAD_WHATSAPP_GROUP_ID', '')
 
 # Column indices for main sheet (to find player names by phone)
 COL_FIRST_NAME = 0
@@ -213,8 +220,8 @@ def cleanup_old_poll_logs(sheets):
     Only runs on Sundays.
     """
     try:
-        # Check if today is Sunday (weekday == 6)
-        now = datetime.now()
+        # Check if today is Sunday (weekday == 6) in PST
+        now = datetime.now(PST)
         if now.weekday() != 6:
             return False
 
@@ -362,7 +369,7 @@ def update_last_voted_date(sheets, phone: str):
                 if cell_digits == phone_normalized:
                     # Update Last Voted column with ISO date format
                     # Using USER_ENTERED so Sheets parses it as a date value
-                    today = datetime.now()
+                    today = datetime.now(PST)
                     last_voted_str = today.strftime('%Y-%m-%d')  # ISO format: YYYY-MM-DD
 
                     # Column M (index 12) is Last Voted
@@ -436,7 +443,7 @@ def update_poll_date_columns(sheets, phone: str, poll_id: str, selected_options:
         # Check poll age - ignore votes from polls older than 7 days
         poll_creation_date = get_poll_creation_date(sheets, poll_id)
         if poll_creation_date:
-            days_old = (datetime.now() - poll_creation_date).days
+            days_old = (datetime.now(PST).replace(tzinfo=None) - poll_creation_date).days
             if days_old > 7:
                 logger.info(f"Ignoring vote from expired poll (poll is {days_old} days old)")
                 return False
@@ -618,8 +625,8 @@ def handle_poll_update(data: dict) -> dict:
         if player_name == "Unknown":
             player_name = voter_name  # Fall back to WhatsApp name
 
-        # Record vote to Pickle Poll Log sheet
-        now = datetime.now()
+        # Record vote to Pickle Poll Log sheet (use PST timezone)
+        now = datetime.now(PST)
         poll_date = now.strftime('%m/%d/%y %H:%M:%S')  # Assuming poll just created
         vote_timestamp = now.strftime('%m/%d/%y %H:%M:%S')
         vote_options_str = ', '.join(selected_options) if selected_options else '(removed all votes)'
@@ -748,6 +755,13 @@ def webhook(request):
         type_webhook = data.get('typeWebhook', '')
         message_data = data.get('messageData', {})
         type_message = message_data.get('typeMessage', '')
+
+        # Filter by group ID - only process votes from SMAD group (not Admin Dinkers)
+        sender_data = data.get('senderData', {})
+        chat_id = sender_data.get('chatId', '')
+        if SMAD_WHATSAPP_GROUP_ID and chat_id != SMAD_WHATSAPP_GROUP_ID:
+            print(f"Ignoring message from non-SMAD group: {chat_id}", flush=True)
+            return {'status': 'ignored', 'reason': 'non-SMAD group'}, 200
 
         # Handle poll update (vote cast/changed)
         if type_message == 'pollUpdateMessage':

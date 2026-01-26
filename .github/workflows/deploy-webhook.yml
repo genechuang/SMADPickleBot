@@ -43,7 +43,8 @@ jobs:
             --source=./webhook \
             --memory=256MB \
             --timeout=60s \
-            --gen2
+            --gen2 \
+            --set-env-vars "SMAD_WHATSAPP_GROUP_ID=${{ vars.SMAD_WHATSAPP_GROUP_ID }}"
 
       - name: Get function URL
         run: |

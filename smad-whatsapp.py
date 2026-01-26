@@ -681,6 +681,8 @@ def create_availability_poll(wa_client, dry_run: bool = False) -> bool:
         output += "Options:\n"
         for opt in options:
             output += f"  - {opt['optionName']}\n"
+        if ADMIN_GROUP_ID:
+            output += f"\n[DRY RUN] Would also post poll to Admin Dinkers group ({ADMIN_GROUP_ID}) (votes not tracked)\n"
         try:
             print(output)
         except UnicodeEncodeError:
@@ -707,6 +709,22 @@ def create_availability_poll(wa_client, dry_run: bool = False) -> bool:
                 add_poll_date_columns(sheets, date_options)
             except Exception as e:
                 print(f"[WARNING] Failed to add date columns to sheet: {e}")
+
+            # Also post poll to Admin Dinkers group (for visibility, votes not tracked)
+            if ADMIN_GROUP_ID:
+                try:
+                    admin_response = wa_client.sending.sendPoll(
+                        ADMIN_GROUP_ID,
+                        poll_question,
+                        options,
+                        multipleAnswers=True
+                    )
+                    if admin_response.code == 200:
+                        print("[OK] Poll also posted to Admin Dinkers group (votes not tracked)")
+                    else:
+                        print(f"[WARNING] Failed to post poll to Admin Dinkers: {admin_response.data}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to post poll to Admin Dinkers: {e}")
 
             return True
         else:
