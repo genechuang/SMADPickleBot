@@ -1398,6 +1398,274 @@ Please vote in this week's poll pinned to the top of the group so I can plan the
         return False
 
 
+def get_available_poll_options(sheets) -> List[str]:
+    """
+    Get available date options from the current poll by reading sheet headers.
+    Returns list of date column headers (e.g., ["Wed 1/29/26 7pm", "Fri 1/31/26 7pm"]).
+    """
+    try:
+        # Read headers from the sheet
+        result = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"'{SHEET_NAME}'!1:1"
+        ).execute()
+        headers = result.get('values', [[]])[0] if result.get('values') else []
+
+        # Return headers starting from COL_FIRST_DATE
+        date_options = []
+        for i, header in enumerate(headers):
+            if i >= COL_FIRST_DATE and header:
+                date_options.append(header)
+
+        return date_options
+    except Exception as e:
+        print(f"[ERROR] Failed to get poll options: {e}")
+        return []
+
+
+def update_vote(sheets, player_name: str, vote_options: List[str], dry_run: bool = False) -> bool:
+    """
+    Manually record a poll vote for a player.
+
+    This is used when GREEN-API fails to deliver pollUpdateMessage webhooks.
+
+    Args:
+        sheets: Google Sheets service
+        player_name: Full name of the player (e.g., "Karan Keswani")
+        vote_options: List of selected date options (e.g., ["Wed 1/29/26 7pm", "Fri 1/31/26 7pm"])
+        dry_run: If True, preview changes without writing
+
+    Returns:
+        True if successful, False otherwise
+    """
+    # Get latest poll info
+    poll_info = _smad_sheets.get_latest_poll_info(sheets)
+    if not poll_info:
+        print("[ERROR] No poll found in Pickle Poll Log sheet.")
+        print("Make sure a poll has been created and at least one vote recorded.")
+        return False
+
+    poll_id = poll_info.get('poll_id', 'manual')
+    poll_date = poll_info.get('poll_date', '')
+    poll_question = poll_info.get('poll_question', '')
+
+    print(f"\n=== Manual Vote Update ===\n")
+    safe_print(f"Poll: {poll_question}")
+    print(f"Poll Date: {poll_date}")
+    print(f"Player: {player_name}")
+    print(f"Selected Options: {', '.join(vote_options)}")
+
+    # Read sheet data to find player row
+    result = sheets.values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"'{SHEET_NAME}'"
+    ).execute()
+    data = result.get('values', [])
+
+    if len(data) < 2:
+        print("[ERROR] Sheet appears empty.")
+        return False
+
+    headers = data[0]
+
+    # Find player row
+    name_parts = player_name.strip().split(' ', 1)
+    if len(name_parts) < 2:
+        print(f"[ERROR] Invalid player name format. Use 'First Last'.")
+        return False
+
+    first_name, last_name = name_parts[0], name_parts[1]
+    player_row_idx = _smad_sheets.find_player_row(data, first_name, last_name)
+
+    if player_row_idx is None:
+        print(f"[ERROR] Player '{player_name}' not found in sheet.")
+        return False
+
+    # Row index in sheet (add 1 for 1-based, already includes header offset)
+    sheet_row = player_row_idx + 1
+
+    # Check if player already voted for this poll
+    existing_voters = _smad_sheets.get_poll_voters(sheets, poll_date)
+    already_voted = player_name in existing_voters
+
+    if already_voted:
+        print(f"\n[INFO] {player_name} already voted - this will replace their previous selections.")
+
+    # Prepare updates
+    updates = []
+
+    # Update Last Voted column
+    pst = pytz.timezone('America/Los_Angeles')
+    now = datetime.now(pst)
+    last_voted_str = f"{now.month}/{now.day}/{now.year % 100}"
+    vote_timestamp = f"{now.month}/{now.day}/{now.year % 100} {now.hour}:{now.minute:02d}:{now.second:02d}"
+
+    last_voted_col = _smad_sheets.col_index_to_letter(COL_LAST_VOTED)
+    updates.append({
+        'range': f"'{SHEET_NAME}'!{last_voted_col}{sheet_row}",
+        'values': [[last_voted_str]]
+    })
+    print(f"\n[UPDATE] Last Voted -> {last_voted_str}")
+
+    # Get all poll options for the current poll (from other voters in Pickle Poll Log)
+    # This helps us know which columns to clear (set 'n') for non-selected options
+    all_poll_options = set()
+    try:
+        poll_log_data = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"'{_smad_sheets.POLL_LOG_SHEET_NAME}'"
+        ).execute().get('values', [])
+        for row in poll_log_data[1:]:  # Skip header
+            if len(row) > _smad_sheets.PPL_COL_VOTE_OPTIONS:
+                row_poll_date = row[_smad_sheets.PPL_COL_POLL_DATE] if len(row) > _smad_sheets.PPL_COL_POLL_DATE else ''
+                if row_poll_date == poll_date:
+                    opts = row[_smad_sheets.PPL_COL_VOTE_OPTIONS].split(',')
+                    for opt in opts:
+                        opt = opt.strip()
+                        if opt and "can't play" not in opt.lower():
+                            all_poll_options.add(opt)
+    except Exception:
+        pass  # If we can't get poll options, just update selected ones
+
+    # Update date columns - set 'y' for selected, 'n' for other poll options (trumps previous vote)
+    for col_idx, header in enumerate(headers):
+        if col_idx < COL_FIRST_DATE:
+            continue
+
+        # Check if this header matches any selected option
+        is_selected = False
+        for opt in vote_options:
+            # Try exact match
+            if header == opt or header.strip() == opt.strip():
+                is_selected = True
+                break
+            # Partial match on date
+            header_date = ' '.join(header.split()[:2]) if header else ''
+            opt_date = ' '.join(opt.split()[:2]) if opt else ''
+            if header_date and opt_date and header_date == opt_date:
+                is_selected = True
+                break
+
+        # Check if this header matches any poll option (for clearing non-selected)
+        is_poll_option = False
+        for poll_opt in all_poll_options:
+            if header == poll_opt or header.strip() == poll_opt.strip():
+                is_poll_option = True
+                break
+            header_date = ' '.join(header.split()[:2]) if header else ''
+            poll_opt_date = ' '.join(poll_opt.split()[:2]) if poll_opt else ''
+            if header_date and poll_opt_date and header_date == poll_opt_date:
+                is_poll_option = True
+                break
+
+        col_letter = _smad_sheets.col_index_to_letter(col_idx)
+        if is_selected:
+            updates.append({
+                'range': f"'{SHEET_NAME}'!{col_letter}{sheet_row}",
+                'values': [['y']]
+            })
+            print(f"[UPDATE] {header} -> y")
+        elif is_poll_option:
+            # Clear previous vote for this poll option
+            updates.append({
+                'range': f"'{SHEET_NAME}'!{col_letter}{sheet_row}",
+                'values': [['n']]
+            })
+            print(f"[UPDATE] {header} -> n (clearing previous)")
+
+    # Record in Pickle Poll Log
+    vote_options_str = ', '.join(vote_options)
+    vote_raw_json = json.dumps({'manual': True, 'options': vote_options, 'recorded_by': 'update-vote'})
+
+    print(f"\n[UPDATE] Pickle Poll Log -> {vote_options_str}")
+
+    if dry_run:
+        print(f"\n[DRY RUN] Would update {len(updates)} cells and add 1 row to Pickle Poll Log")
+        return True
+
+    # Execute batch update for main sheet
+    if updates:
+        body = {'valueInputOption': 'RAW', 'data': updates}
+        sheets.values().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body=body
+        ).execute()
+
+    # Record in Pickle Poll Log
+    _smad_sheets.record_poll_vote(
+        sheets,
+        poll_id=poll_id,
+        poll_date=poll_date,
+        poll_question=poll_question,
+        player_name=player_name,
+        vote_timestamp=vote_timestamp,
+        vote_options=vote_options_str,
+        vote_raw_json=vote_raw_json
+    )
+
+    print(f"\n[OK] Vote recorded successfully for {player_name}")
+    return True
+
+
+def cmd_update_vote(args):
+    """Command: Manually record a poll vote for a player."""
+    sheets = get_sheets_service()
+
+    # List options mode
+    if args.list_options:
+        print("\n=== Available Poll Options ===\n")
+        options = get_available_poll_options(sheets)
+        if not options:
+            print("No date columns found. Poll may not have been created yet.")
+            return
+
+        for opt in options:
+            print(f"  - {opt}")
+
+        print(f"\nUsage: python smad-whatsapp.py update-vote \"{args.player_name}\" \"option1, option2\"")
+        return
+
+    # Validate vote_options provided
+    if not args.vote_options:
+        print("[ERROR] Vote options required. Use --list-options to see available options.")
+        return
+
+    # Parse comma-separated options
+    vote_options = [opt.strip() for opt in args.vote_options.split(',') if opt.strip()]
+
+    if not vote_options:
+        print("[ERROR] No valid vote options provided.")
+        return
+
+    # Validate options against available ones
+    available = get_available_poll_options(sheets)
+    invalid_options = []
+    for opt in vote_options:
+        # Check for exact or partial match
+        found = False
+        for avail in available:
+            if opt == avail or opt.strip() == avail.strip():
+                found = True
+                break
+            # Partial match on date
+            opt_date = ' '.join(opt.split()[:2]) if opt else ''
+            avail_date = ' '.join(avail.split()[:2]) if avail else ''
+            if opt_date and avail_date and opt_date == avail_date:
+                found = True
+                break
+        if not found:
+            invalid_options.append(opt)
+
+    if invalid_options:
+        print(f"[WARNING] These options don't match any date columns: {', '.join(invalid_options)}")
+        print("Available options:")
+        for opt in available:
+            print(f"  - {opt}")
+        print("\nProceeding anyway (options may match by date part)...")
+
+    update_vote(sheets, args.player_name, vote_options, dry_run=args.dry_run)
+
+
 def cmd_show_votes(args):
     """Command: Show poll votes from Pickle Poll Log sheet."""
     sheets = get_sheets_service()
@@ -1552,6 +1820,8 @@ Examples:
   %(prog)s send-balance-summary             Post balance summary to group
   %(prog)s create-poll                      Create weekly availability poll
   %(prog)s list-group-members               List WhatsApp group members
+  %(prog)s update-vote "John Doe" --list-options    Show available vote options
+  %(prog)s update-vote "John Doe" "Wed 1/29/26 7pm, Fri 1/31/26 7pm"  Manually record vote
 
 Environment variables:
   GREENAPI_INSTANCE_ID      GREEN-API instance ID
@@ -1620,6 +1890,17 @@ Environment variables:
     group_vote_reminder_parser = subparsers.add_parser('send-group-vote-reminder',
                                                         help='Post vote reminder to group listing non-voters')
     group_vote_reminder_parser.set_defaults(func=cmd_send_group_vote_reminder)
+
+    # update-vote
+    update_vote_parser = subparsers.add_parser('update-vote',
+                                                help='Manually record a poll vote for a player')
+    update_vote_parser.add_argument('player_name',
+                                     help='Player name (e.g., "Karan Keswani")')
+    update_vote_parser.add_argument('vote_options', nargs='?', default='',
+                                     help='Comma-separated vote options (e.g., "Wed 1/29/26 7pm, Fri 1/31/26 7pm")')
+    update_vote_parser.add_argument('--list-options', action='store_true', dest='list_options',
+                                     help='List available poll options instead of recording a vote')
+    update_vote_parser.set_defaults(func=cmd_update_vote)
 
     # list-group-members
     members_parser = subparsers.add_parser('list-group-members',
