@@ -102,7 +102,7 @@ POLL_CREATED_DATE = os.environ.get('POLL_CREATED_DATE', '')  # Format: M/DD/YY
 BOOKING_LIST = os.environ.get('BOOKING_LIST', '')  # Format: Monday 7:00 PM|Both,Tuesday 7:00 PM|Both,...
 
 # Bot signature for all WhatsApp messages
-PICKLEBOT_SIGNATURE = "Picklebot🥒🏓🤖"
+PICKLEBOT_SIGNATURE = "SMAD Picklebot 🥒🏓🤖"
 
 
 def get_whatsapp_client():
