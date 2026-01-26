@@ -1,6 +1,7 @@
 name: Weekly Poll Creation (Sunday)
 
 # Creates availability poll every Sunday at 10 AM PST
+# Last scheduler refresh: 2026-01-25
 on:
   schedule:
     # Runs every Sunday at 10:00 AM PST

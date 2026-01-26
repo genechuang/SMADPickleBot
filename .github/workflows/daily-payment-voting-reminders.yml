@@ -1,6 +1,7 @@
 name: Daily WhatsApp Automation (Payments & Votes)
 
 # Daily automation for SMAD Pickleball group
+# Last scheduler refresh: 2026-01-25
 on:
   schedule:
     # Runs every day at 10:00 AM PST
