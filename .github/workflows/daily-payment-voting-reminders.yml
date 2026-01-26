@@ -2,10 +2,8 @@ name: Daily WhatsApp Automation (Payments & Votes)
 
 on:
   schedule:
-    # Runs every day at 11:10 AM PST (7:10 PM UTC)
+    - cron: '9 19 * * *'
     - cron: '10 19 * * *'
-    # Backup trigger at 11:15 AM PST (7:15 PM UTC)
-    - cron: '15 19 * * *'
 
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
