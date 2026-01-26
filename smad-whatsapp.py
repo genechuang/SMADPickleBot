@@ -663,9 +663,11 @@ def create_availability_poll(wa_client, dry_run: bool = False) -> bool:
     # Add "Can't play this week" option
     options.append({"optionName": "Can't play this week"})
 
-    # Calculate Monday of current week for poll question
-    days_since_monday = today.weekday()  # Monday=0, Sunday=6
-    monday_of_week = today - timedelta(days=days_since_monday)
+    # Calculate Monday of the week containing the poll dates
+    # Since options start from tomorrow (today + 1), find the Monday of that week
+    first_option_date = today + timedelta(days=1)
+    days_since_monday = first_option_date.weekday()  # Monday=0, Sunday=6
+    monday_of_week = first_option_date - timedelta(days=days_since_monday)
     monday_str = f"{monday_of_week.month}/{monday_of_week.day}/{monday_of_week.year % 100}"
 
     poll_question = f"Can you play the week of {monday_str}? {PICKLEBOT_SIGNATURE}"
