@@ -10,7 +10,7 @@ on:
     # Format: minute hour day month weekday
     # Note: During PDT (March-November), use '0 18 * * *'
     # Note: During PST (November-March), use '0 19 * * *'
-    - cron: '1 19 * * *'  # 11:01 AM PST (testing trigger)
+    - cron: '3 19 * * *'  # 11:03 AM PST (testing trigger)
 
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
