@@ -69,7 +69,7 @@ PAYMENT_LOG_HEADERS = ['Date', 'Player Name', 'Venmo Username', 'Amount', 'Metho
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
-PICKLEBOT_SIGNATURE = "Picklebot🥒🏓🤖"
+PICKLEBOT_SIGNATURE = "SMAD Picklebot 🥒🏓🤖"
 
 
 def format_phone_for_whatsapp(phone: str) -> str:
