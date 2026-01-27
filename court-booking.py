@@ -1708,13 +1708,13 @@ if __name__ == "__main__":
     # Example usage:
     #
     # Manual single booking mode (no BOOKING_LIST needed):
-    #   python ath-booking.py --booking-date-time "01/20/2026 10:00 AM" --court "South Pickleball Court" --duration "120"
-    #   python ath-booking.py --booking-date-time "01/20/2026 10:00 AM" --court "both" --duration "120"
+    #   python court-booking.py --booking-date-time "01/20/2026 10:00 AM" --court "South Pickleball Court" --duration "120"
+    #   python court-booking.py --booking-date-time "01/20/2026 10:00 AM" --court "both" --duration "120"
     #
     # Booking list mode with invoke-time (waits until 12:00:15 AM PST):
-    #   python ath-booking.py --invoke-time "01-15-2026 23:55:00"
+    #   python court-booking.py --invoke-time "01-15-2026 23:55:00"
     #
     # Booking list mode without invoke-time (books immediately, requires BOOKING_LIST in .env):
-    #   python ath-booking.py
+    #   python court-booking.py
 
     asyncio.run(main(booking_date, booking_time, args.court, args.duration, getattr(args, 'invoke_time')))

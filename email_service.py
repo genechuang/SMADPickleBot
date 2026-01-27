@@ -3,7 +3,7 @@
 Common Email Service Module
 
 Shared email functionality for:
-- ath-booking.py (Athenaeum court booking notifications)
+- court-booking.py (Athenaeum court booking notifications)
 - smad-sheets.py (SMAD pickleball payment reminders)
 
 Configuration via environment variables:

@@ -341,17 +341,17 @@ Before relying on the scheduled run, test manually:
 **To test booking list mode locally:**
 ```bash
 # With invoke_time (waits until 12:00:15 AM PST before booking)
-python ath-booking.py --invoke-time "01-15-2026 07:58:30"
+python court-booking.py --invoke-time "01-15-2026 07:58:30"
 
 # Without invoke_time (books immediately, no wait)
 # Just set BOOKING_LIST in your .env and run:
-python ath-booking.py
+python court-booking.py
 ```
 
 **To test manual booking mode:**
 ```bash
 # For manual single bookings (no BOOKING_LIST required)
-python ath-booking.py --booking-date-time "01/22/2026 7:00 PM" --court "South Pickleball Court" --duration "120"
+python court-booking.py --booking-date-time "01/22/2026 7:00 PM" --court "South Pickleball Court" --duration "120"
 ```
 
 ## Advanced Configuration
@@ -382,7 +382,7 @@ To book a single specific court globally:
 
 ### Custom Wait Time
 The script waits until 12:00:15 AM PST. To adjust:
-- Edit `wait_until_booking_time()` call in `ath-booking.py`
+- Edit `wait_until_booking_time()` call in `court-booking.py`
 - Change `target_second=15` to your desired second
 
 ### Different Timezone

@@ -6,7 +6,7 @@ This codebase is a multi-service pickleball automation platform for court bookin
 
 **Three independent services sharing common utilities:**
 
-1. **Athenaeum Court Booking** (`ath-booking.py`) - Playwright-based browser automation
+1. **Athenaeum Court Booking** (`court-booking.py`) - Playwright-based browser automation
    - Logs into Athenaeum member portal and books pickleball courts
    - Runs via GitHub Actions daily at 11:50 PM PST (primary) + 12:01 AM PST (backup)
    - **Critical timing**: Waits until exactly 12:00:15 AM PST when courts become available 7 days out
@@ -43,7 +43,7 @@ This codebase is a multi-service pickleball automation platform for court bookin
 - **Email setup**: Requires Gmail App Password (not regular password), set via `GMAIL_APP_PASSWORD`
 
 ### Structured Logging ("Twelve-Factor App" pattern)
-- `ath-booking.py` uses JSON-formatted logging to stdout/stderr (see `log()` function at line ~30)
+- `court-booking.py` uses JSON-formatted logging to stdout/stderr (see `log()` function at line ~30)
 - Format: `{"timestamp": "...", "level": "INFO", "message": "...", ...extra_data}`
 - This is NOT standard for the other services - only Athenaeum uses it (keep it!)
 
@@ -82,7 +82,7 @@ This codebase is a multi-service pickleball automation platform for court bookin
 ## File Organization
 
 ```
-ath-booking.py              # Athenaeum court booking (~1630 lines)
+court-booking.py            # Athenaeum court booking (~1630 lines)
 smad-sheets.py              # Google Sheets management (~769 lines)
 smad-whatsapp.py            # WhatsApp messaging & polls (~1489 lines)
 email_service.py            # Shared email utilities (~400 lines)
@@ -92,7 +92,9 @@ requirements.txt            # Dependencies
 .env.example               # Configuration template
 SMAD_SETUP.md              # Google Cloud setup guide
 GITHUB_ACTION_SETUP.md     # GitHub Actions configuration
-README.md                   # Athenaeum court booking overview
+README.md                   # Project overview and system architecture
+COURT_BOOKING.md            # Court booking automation
+PAYMENT_MANAGEMENT.md       # Payment tracking and Venmo sync
 ```
 
 ## Common Tasks for AI Agents
@@ -103,7 +105,7 @@ README.md                   # Athenaeum court booking overview
 3. If affecting webhook data, update `webhook/main.py` Google Sheets integration
 
 ### Fixing timing issues with Athenaeum booking
-- Check `prepare_booking_list_mode()` function (line ~68 in ath-booking.py)
+- Check `prepare_booking_list_mode()` function (line ~68 in court-booking.py)
 - PST timezone handling via `pytz.timezone('America/Los_Angeles')`
 - 7-day-ahead math: target date = today + 7 days
 - Async sleep implementation for waiting until target time
