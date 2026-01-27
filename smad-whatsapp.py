@@ -1776,7 +1776,7 @@ def cmd_send_balance_dm(args):
         if players_with_balance:
             total = sum(p['balance'] for p in players_with_balance)
             details = f"Sent payment reminders to {len(players_with_balance)} players:\n"
-            details += "\n".join(f"• {p['name']}: ${p['balance']:.2f}" for p in players_with_balance)
+            details += "\n".join(f"• {p['name']}: ${p['balance']:.2f} (Last played: {p['last_game_date'] or 'Never'})" for p in players_with_balance)
             details += f"\n\n*Total Outstanding: ${total:.2f}*"
         else:
             details = "No outstanding balances! Everyone is paid up."
