@@ -74,6 +74,7 @@ def venmo_email_trigger(cloud_event: CloudEvent):
     payment_log_sheet = os.environ.get('PAYMENT_LOG_SHEET_NAME', 'Payment Log')
     greenapi_instance_id = os.environ.get('GREENAPI_INSTANCE_ID', '')
     greenapi_api_token = os.environ.get('GREENAPI_API_TOKEN', '')
+    admin_dinkers_group_id = os.environ.get('ADMIN_DINKERS_WHATSAPP_GROUP_ID', '')
     dry_run = os.environ.get('DRY_RUN', '').lower() in ('true', '1', 'yes')
 
     # Validate required configuration
@@ -106,7 +107,8 @@ def venmo_email_trigger(cloud_event: CloudEvent):
             limit=50,  # Check last 50 transactions
             dry_run=dry_run,
             greenapi_instance_id=greenapi_instance_id,
-            greenapi_api_token=greenapi_api_token
+            greenapi_api_token=greenapi_api_token,
+            admin_dinkers_group_id=admin_dinkers_group_id
         )
 
         print(f"[SUCCESS] Sync completed: {recorded} recorded, {skipped} skipped, {unmatched} unmatched")

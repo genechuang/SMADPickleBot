@@ -86,7 +86,7 @@ jobs:
             --trigger-topic=venmo-payment-emails \
             --memory=512MB \
             --timeout=60s \
-            --set-env-vars "SMAD_SPREADSHEET_ID=1w4_-hnykYgcs6nyyDkie9CwBRwri7aJUblD2mxgNUHY,SMAD_SHEET_NAME=2026 Pickleball" \
+            --set-env-vars "SMAD_SPREADSHEET_ID=1w4_-hnykYgcs6nyyDkie9CwBRwri7aJUblD2mxgNUHY,SMAD_SHEET_NAME=2026 Pickleball,ADMIN_DINKERS_WHATSAPP_GROUP_ID=${{ vars.ADMIN_DINKERS_WHATSAPP_GROUP_ID }}" \
             --set-secrets "VENMO_ACCESS_TOKEN=VENMO_ACCESS_TOKEN:latest,SMAD_GOOGLE_CREDENTIALS_JSON=SMAD_GOOGLE_CREDENTIALS_JSON:latest,GREENAPI_INSTANCE_ID=GREENAPI_INSTANCE_ID:latest,GREENAPI_API_TOKEN=GREENAPI_API_TOKEN:latest"
 
       - name: Verify deployment

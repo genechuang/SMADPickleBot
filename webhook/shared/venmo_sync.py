@@ -93,8 +93,8 @@ def get_whatsapp_client(instance_id: str, api_token: str):
         return None
 
 
-def send_whatsapp_thank_you(wa_client, player_name: str, first_name: str, mobile: str, amount: float, balance: float) -> bool:
-    """Send a WhatsApp thank you DM to a player for their payment."""
+def send_whatsapp_thank_you(wa_client, player_name: str, first_name: str, mobile: str, amount: float, balance: float, admin_group_id: str = '') -> bool:
+    """Send a WhatsApp thank you DM to a player for their payment, and notify Admin Dinkers."""
     if not wa_client:
         return False
 
@@ -112,17 +112,35 @@ Your balance is now: *${balance:.2f}*
 Thanks,
 {PICKLEBOT_SIGNATURE}"""
 
+    dm_sent = False
     try:
         response = wa_client.sending.sendMessage(phone_id, message)
         if response.code == 200:
             print(f"  [OK WhatsApp] Sent thank you to {player_name} ({phone_id})")
-            return True
+            dm_sent = True
         else:
             print(f"  [WARN WhatsApp] Failed to send to {player_name}: {response.data}")
-            return False
     except Exception as e:
         print(f"  [WARN WhatsApp] Failed to send to {player_name}: {e}")
-        return False
+
+    # Also send to Admin Dinkers group
+    if admin_group_id:
+        admin_message = f"""*Payment Received*
+
+{player_name} paid *${amount:.2f}*
+New balance: *${balance:.2f}*
+
+{PICKLEBOT_SIGNATURE}"""
+        try:
+            response = wa_client.sending.sendMessage(admin_group_id, admin_message)
+            if response.code == 200:
+                print(f"  [OK WhatsApp] Notified Admin Dinkers about {player_name}'s payment")
+            else:
+                print(f"  [WARN WhatsApp] Failed to notify Admin Dinkers: {response.data}")
+        except Exception as e:
+            print(f"  [WARN WhatsApp] Failed to notify Admin Dinkers: {e}")
+
+    return dm_sent
 
 
 def get_sheets_service(google_credentials):
@@ -360,7 +378,8 @@ def sync_venmo_to_sheet(
     limit: int = 50,
     dry_run: bool = False,
     greenapi_instance_id: str = '',
-    greenapi_api_token: str = ''
+    greenapi_api_token: str = '',
+    admin_dinkers_group_id: str = ''
 ) -> Tuple[int, int, int]:
     """
     Sync Venmo payments to Google Sheets Payment Log.
@@ -552,7 +571,7 @@ def sync_venmo_to_sheet(
                             balance = float(str(row[COL_BALANCE]).replace('$', '').replace(',', '').strip())
                         except (ValueError, AttributeError):
                             balance = 0.0
-                if send_whatsapp_thank_you(wa_client, player_name, fname, mobile, amt, balance):
+                if send_whatsapp_thank_you(wa_client, player_name, fname, mobile, amt, balance, admin_dinkers_group_id):
                     thank_you_sent += 1
             print(f"[DONE] Sent {thank_you_sent}/{len(recorded_payment_details)} thank you messages")
 

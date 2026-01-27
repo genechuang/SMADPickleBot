@@ -57,6 +57,7 @@ VENMO_ACCESS_TOKEN = os.environ.get('VENMO_ACCESS_TOKEN', '')
 # WhatsApp Configuration
 GREENAPI_INSTANCE_ID = os.environ.get('GREENAPI_INSTANCE_ID', '')
 GREENAPI_API_TOKEN = os.environ.get('GREENAPI_API_TOKEN', '')
+ADMIN_DINKERS_GROUP_ID = os.environ.get('ADMIN_DINKERS_WHATSAPP_GROUP_ID', '')
 
 # Column indices for main sheet - import from smad-sheets.py (single source of truth)
 import importlib.util
@@ -490,6 +491,7 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50, send_tha
     # Only pass WhatsApp credentials if thank you messages are enabled
     greenapi_id = GREENAPI_INSTANCE_ID if send_thank_you else ''
     greenapi_token = GREENAPI_API_TOKEN if send_thank_you else ''
+    admin_group_id = ADMIN_DINKERS_GROUP_ID if send_thank_you else ''
 
     try:
         sync_venmo_to_sheet(
@@ -501,7 +503,8 @@ def sync_venmo_payments(sheets, dry_run: bool = False, limit: int = 50, send_tha
             limit=limit,
             dry_run=dry_run,
             greenapi_instance_id=greenapi_id,
-            greenapi_api_token=greenapi_token
+            greenapi_api_token=greenapi_token,
+            admin_dinkers_group_id=admin_group_id
         )
         return True
     except Exception as e:
