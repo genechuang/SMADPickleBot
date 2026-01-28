@@ -167,3 +167,62 @@ resource "google_cloudfunctions2_function" "venmo_sync" {
     google_project_service.apis["eventarc.googleapis.com"],
   ]
 }
+
+# -----------------------------------------------------------------------------
+# GHA Error Monitor Function
+# -----------------------------------------------------------------------------
+# HTTP-triggered function for GitHub Actions error monitoring
+# Receives GitHub webhooks, diagnoses failures with Claude API, sends WhatsApp alerts
+#
+# Note: This function is deployed via GitHub Actions (deploy-webhook.yml).
+# Terraform manages the infrastructure definition but ignores runtime changes.
+
+resource "google_cloudfunctions2_function" "gha_error_monitor" {
+  name     = "gha-error-monitor"
+  location = var.region
+  project  = var.project_id
+
+  build_config {
+    runtime     = var.function_runtime
+    entry_point = "gha_error_monitor"
+
+    source {
+      storage_source {
+        bucket = google_storage_bucket.function_source.name
+        object = "gha-error-monitor/source.zip"
+      }
+    }
+  }
+
+  service_config {
+    # Allow unauthenticated access (GitHub webhook endpoint)
+    ingress_settings               = "ALLOW_ALL"
+    all_traffic_on_latest_revision = true
+  }
+
+  labels = {
+    environment = var.environment
+    managed_by  = "terraform"
+  }
+
+  # Ignore changes managed by CI/CD deployment
+  lifecycle {
+    ignore_changes = [
+      build_config,
+      service_config[0].available_memory,
+      service_config[0].max_instance_count,
+      service_config[0].timeout_seconds,
+      service_config[0].environment_variables,
+      service_config[0].secret_environment_variables,
+    ]
+  }
+}
+
+# Allow unauthenticated invocations (GitHub webhook)
+resource "google_cloud_run_service_iam_member" "gha_error_monitor_invoker" {
+  project  = var.project_id
+  location = var.region
+  service  = google_cloudfunctions2_function.gha_error_monitor.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}

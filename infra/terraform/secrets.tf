@@ -70,6 +70,48 @@ resource "google_secret_manager_secret" "greenapi_api_token" {
   }
 }
 
+resource "google_secret_manager_secret" "anthropic_api_key" {
+  secret_id = "ANTHROPIC_API_KEY"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  labels = {
+    environment = var.environment
+    managed_by  = "terraform"
+  }
+}
+
+resource "google_secret_manager_secret" "github_token" {
+  secret_id = "GITHUB_TOKEN"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  labels = {
+    environment = var.environment
+    managed_by  = "terraform"
+  }
+}
+
+resource "google_secret_manager_secret" "github_webhook_secret" {
+  secret_id = "GITHUB_WEBHOOK_SECRET"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  labels = {
+    environment = var.environment
+    managed_by  = "terraform"
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Secret IAM Bindings
 # -----------------------------------------------------------------------------
@@ -99,6 +141,27 @@ resource "google_secret_manager_secret_iam_member" "greenapi_instance_accessor" 
 resource "google_secret_manager_secret_iam_member" "greenapi_token_accessor" {
   project   = var.project_id
   secret_id = google_secret_manager_secret.greenapi_api_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${local.compute_sa_email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "anthropic_key_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.anthropic_api_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${local.compute_sa_email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "github_token_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.github_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${local.compute_sa_email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "github_webhook_secret_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.github_webhook_secret.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${local.compute_sa_email}"
 }

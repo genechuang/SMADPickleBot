@@ -98,3 +98,51 @@ jobs:
             --format='value(state)')
           echo "## Venmo Sync Trigger Deployed!" >> $GITHUB_STEP_SUMMARY
           echo "**State:** $STATE" >> $GITHUB_STEP_SUMMARY
+
+  deploy-gha-error-monitor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy GHA Error Monitor
+        run: |
+          gcloud functions deploy gha-error-monitor \
+            --project=${{ env.PROJECT_ID }} \
+            --region=${{ env.REGION }} \
+            --runtime=python311 \
+            --gen2 \
+            --source=./webhook/gha-error-monitor \
+            --entry-point=gha_error_monitor \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory=256MB \
+            --timeout=60s \
+            --set-env-vars "GITHUB_REPO=genechuang/SMADPickleBot,ADMIN_DINKERS_WHATSAPP_GROUP_ID=${{ vars.ADMIN_DINKERS_WHATSAPP_GROUP_ID }},ADMIN_PHONE_ID=${{ vars.ADMIN_PHONE_ID }}" \
+            --set-secrets "GITHUB_TOKEN=GITHUB_TOKEN:latest,GITHUB_WEBHOOK_SECRET=GITHUB_WEBHOOK_SECRET:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,GREENAPI_INSTANCE_ID=GREENAPI_INSTANCE_ID:latest,GREENAPI_API_TOKEN=GREENAPI_API_TOKEN:latest"
+
+      - name: Get function URL
+        run: |
+          URL=$(gcloud functions describe gha-error-monitor \
+            --project=${{ env.PROJECT_ID }} \
+            --region=${{ env.REGION }} \
+            --gen2 \
+            --format='value(serviceConfig.uri)')
+          echo "## GHA Error Monitor Deployed!" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** \`$URL\`" >> $GITHUB_STEP_SUMMARY
+          echo ""
+          echo "Configure this URL as a GitHub webhook with:" >> $GITHUB_STEP_SUMMARY
+          echo "- Event: Workflow runs (workflow_run)" >> $GITHUB_STEP_SUMMARY
+          echo "- Content type: application/json" >> $GITHUB_STEP_SUMMARY

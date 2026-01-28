@@ -48,6 +48,7 @@ graph TB
     subgraph "Google Cloud Platform"
         GCF[Cloud Function Gen2<br/>smad-whatsapp-webhook<br/>Poll Vote Processing]
         VENMO_CF[Cloud Function Gen2<br/>venmo-sync-trigger<br/>Auto Payment Sync]
+        GHA_MON[Cloud Function Gen2<br/>gha-error-monitor<br/>GHA Failure Alerts]
         PUBSUB[Cloud Pub/Sub<br/>venmo-payment-emails topic]
         FS[Firestore<br/>Poll State & Logs]
         SCHEDULER[Cloud Scheduler<br/>Reliable Cron Jobs]
@@ -149,6 +150,14 @@ graph TB
     GHA_GMAIL -->|renew Gmail Watch| GMAIL
     DEPLOY -->|deploys on push to main| GCF
     DEPLOY -->|deploys on push to main| VENMO_CF
+    DEPLOY -->|deploys on push to main| GHA_MON
+
+    %% GHA Error Monitor
+    GHA_BOOK -->|webhook on failure| GHA_MON
+    GHA_REMIND -->|webhook on failure| GHA_MON
+    GHA_POLL -->|webhook on failure| GHA_MON
+    GHA_MON -->|diagnose with Claude| CLAUDE[Claude API<br/>Haiku]
+    GHA_MON -->|send alerts| GREENAPI
 
     %% Configuration
     ENV -.->|credentials| GCF
@@ -176,7 +185,8 @@ graph TB
 
     class U1,U2 userClass
     class WA,GREENAPI whatsappClass
-    class GCF,VENMO_CF,PUBSUB,FS,SCHEDULER gcpClass
+    class GCF,VENMO_CF,GHA_MON,PUBSUB,FS,SCHEDULER gcpClass
+    class CLAUDE paymentClass
     class SHEETS,GMAIL googleClass
     class VENMO paymentClass
     class ATH athenaeumClass
@@ -209,6 +219,7 @@ All workflows are triggered by **Google Cloud Scheduler** for reliable, timezone
 - [Court Booking](COURT_BOOKING.md) - Athenaeum court booking automation
 - [Payment Management](PAYMENT_MANAGEMENT.md) - Venmo sync and payment tracking
 - [WhatsApp Webhook](webhook/README.md) - Poll vote tracking via Cloud Functions
+- [GHA Error Monitor](webhook/gha-error-monitor/README.md) - GitHub Actions failure alerts with Claude diagnosis
 - [Venmo Email Sync](VENMO_EMAIL_SYNC_SETUP.md) - Real-time payment sync via Gmail Watch
 - [Gmail Watch Setup](GMAIL_WATCH_SETUP.md) - Gmail API watch for Venmo notifications
 
