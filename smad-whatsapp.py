@@ -662,6 +662,13 @@ def create_availability_poll(wa_client, dry_run: bool = False) -> bool:
         print("ERROR: SMAD_WHATSAPP_GROUP_ID not configured.")
         return False
 
+    # Archive previous poll log before creating new poll
+    try:
+        sheets = get_sheets_service()
+        _smad_sheets.archive_poll_log(sheets, dry_run=dry_run)
+    except Exception as e:
+        print(f"[WARNING] Failed to archive poll log: {e}")
+
     # Parse booking list from env
     bookings = parse_booking_list()
 

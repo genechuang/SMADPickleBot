@@ -49,6 +49,7 @@ except ImportError:
 SPREADSHEET_ID = os.environ.get('SMAD_SPREADSHEET_ID', '1w4_-hnykYgcs6nyyDkie9CwBRwri7aJUblD2mxgNUHY')
 SHEET_NAME = os.environ.get('SMAD_SHEET_NAME', '2026 Pickleball')
 POLL_LOG_SHEET_NAME = os.environ.get('POLL_LOG_SHEET_NAME', 'Pickle Poll Log')
+POLL_LOG_ARCHIVE_SHEET_NAME = os.environ.get('POLL_LOG_ARCHIVE_SHEET_NAME', 'Pickle Poll Log Archive')
 CREDENTIALS_FILE = os.environ.get('GOOGLE_CREDENTIALS_FILE', 'smad-credentials.json')
 HOURLY_RATE = float(os.environ.get('SMAD_HOURLY_RATE', '4.0'))
 
@@ -89,7 +90,7 @@ __all__ = [
     'COL_INVOICED', 'COL_2026_HOURS', 'COL_LAST_PAID', 'COL_LAST_VOTED', 'COL_FIRST_DATE',
     'PPL_COL_POLL_ID', 'PPL_COL_POLL_DATE', 'PPL_COL_POLL_QUESTION', 'PPL_COL_PLAYER_NAME',
     'PPL_COL_VOTE_TIMESTAMP', 'PPL_COL_VOTE_OPTIONS', 'PPL_COL_VOTE_RAW_JSON',
-    'POLL_LOG_SHEET_NAME'
+    'POLL_LOG_SHEET_NAME', 'POLL_LOG_ARCHIVE_SHEET_NAME'
 ]
 
 # Scopes for Google Sheets API
@@ -695,6 +696,126 @@ def ensure_pickle_poll_log_sheet(sheets):
 
     except HttpError as e:
         print(f"ERROR: Failed to ensure Pickle Poll Log sheet: {e}")
+        return False
+
+
+def archive_poll_log(sheets, dry_run: bool = False) -> bool:
+    """
+    Archive all entries from Pickle Poll Log to Pickle Poll Log Archive.
+
+    Moves all data rows (excluding header) to the archive sheet, then clears
+    the log sheet (keeping only the header). This should be called before
+    creating a new poll to start fresh.
+
+    Args:
+        sheets: Google Sheets service
+        dry_run: If True, show what would be done without making changes
+
+    Returns:
+        True if successful (or no data to archive), False on error
+    """
+    try:
+        # First, read all data from the poll log
+        range_name = f"'{POLL_LOG_SHEET_NAME}'"
+        result = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=range_name
+        ).execute()
+
+        all_rows = result.get('values', [])
+
+        # Need at least header + 1 data row to archive
+        if len(all_rows) <= 1:
+            print(f"[INFO] No poll log entries to archive")
+            return True
+
+        header = all_rows[0]
+        data_rows = all_rows[1:]
+
+        print(f"[INFO] Found {len(data_rows)} poll log entries to archive")
+
+        if dry_run:
+            print(f"[DRY RUN] Would archive {len(data_rows)} entries to '{POLL_LOG_ARCHIVE_SHEET_NAME}'")
+            print(f"[DRY RUN] Would clear '{POLL_LOG_SHEET_NAME}' (keeping header)")
+            return True
+
+        # Ensure archive sheet exists with same headers
+        spreadsheet = sheets.get(spreadsheetId=SPREADSHEET_ID).execute()
+        archive_exists = False
+        for sheet in spreadsheet.get('sheets', []):
+            if sheet['properties']['title'] == POLL_LOG_ARCHIVE_SHEET_NAME:
+                archive_exists = True
+                break
+
+        if not archive_exists:
+            # Create archive sheet
+            request = {
+                'addSheet': {
+                    'properties': {
+                        'title': POLL_LOG_ARCHIVE_SHEET_NAME,
+                        'gridProperties': {
+                            'rowCount': 1000,
+                            'columnCount': 10
+                        }
+                    }
+                }
+            }
+            sheets.batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={'requests': [request]}
+            ).execute()
+            print(f"[OK] Created '{POLL_LOG_ARCHIVE_SHEET_NAME}' sheet")
+
+            # Add headers to archive
+            archive_range = f"'{POLL_LOG_ARCHIVE_SHEET_NAME}'!A1:G1"
+            sheets.values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=archive_range,
+                valueInputOption='RAW',
+                body={'values': [header]}
+            ).execute()
+
+        # Append data rows to archive
+        archive_range = f"'{POLL_LOG_ARCHIVE_SHEET_NAME}'!A:G"
+        sheets.values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=archive_range,
+            valueInputOption='RAW',
+            insertDataOption='INSERT_ROWS',
+            body={'values': data_rows}
+        ).execute()
+        print(f"[OK] Archived {len(data_rows)} entries to '{POLL_LOG_ARCHIVE_SHEET_NAME}'")
+
+        # Clear the poll log (keep header by clearing from row 2)
+        # First, get the sheet ID
+        sheet_id = None
+        for sheet in spreadsheet.get('sheets', []):
+            if sheet['properties']['title'] == POLL_LOG_SHEET_NAME:
+                sheet_id = sheet['properties']['sheetId']
+                break
+
+        if sheet_id is not None:
+            # Delete rows 2 onwards (index 1 onwards, keeping header at row 1)
+            request = {
+                'deleteDimension': {
+                    'range': {
+                        'sheetId': sheet_id,
+                        'dimension': 'ROWS',
+                        'startIndex': 1,  # Row 2 (0-indexed)
+                        'endIndex': len(all_rows)  # Up to and including last row
+                    }
+                }
+            }
+            sheets.batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={'requests': [request]}
+            ).execute()
+            print(f"[OK] Cleared '{POLL_LOG_SHEET_NAME}' (kept header)")
+
+        return True
+
+    except HttpError as e:
+        print(f"ERROR: Failed to archive poll log: {e}")
         return False
 
 
