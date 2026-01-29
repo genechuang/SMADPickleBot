@@ -1239,70 +1239,20 @@ class AthenaeumBooking:
                     page_text = await self.page.inner_text('body')
 
                     # Priority 1: Check for countdown timer (courts not released yet)
-                    # Look for countdown elements - they typically show "X days Y hours Z minutes W seconds"
-                    # The text might be split across lines or have varying whitespace
-
-                    # First, try to find any countdown-like pattern with days
-                    countdown_match = None
-
-                    # Pattern 1: Full format "X days Y hours Z minutes W seconds until reservations open"
-                    countdown_match = re.search(r'(\d+\s*days?\s+\d+\s*hours?\s+\d+\s*minutes?\s+\d+\s*seconds?)\s*(?:until\s+reservations\s+open)?', page_text, re.IGNORECASE)
-
-                    if not countdown_match:
-                        # Pattern 2: Without seconds
-                        countdown_match = re.search(r'(\d+\s*days?\s+\d+\s*hours?\s+\d+\s*minutes?)\s*(?:until\s+reservations\s+open)?', page_text, re.IGNORECASE)
-
-                    if not countdown_match:
-                        # Pattern 3: Just days and hours
-                        countdown_match = re.search(r'(\d+\s*days?\s+\d+\s*hours?)', page_text, re.IGNORECASE)
-
-                    if not countdown_match:
-                        # Pattern 4: Look for "X days" near "until reservations open"
-                        # Search for the section containing countdown
-                        until_pos = page_text.lower().find('until reservations open')
-                        if until_pos > 0:
-                            # Look backwards from "until reservations open" for the countdown
-                            context = page_text[max(0, until_pos-100):until_pos+30]
-                            countdown_match = re.search(r'(\d+\s*days?[^a-zA-Z]*\d*\s*hours?[^a-zA-Z]*\d*\s*min[^a-zA-Z]*\d*\s*sec[^\n]*)', context, re.IGNORECASE)
-                            if not countdown_match:
-                                # Try to extract just numbers + time units
-                                numbers = re.findall(r'(\d+)\s*(days?|hours?|minutes?|seconds?)', context, re.IGNORECASE)
-                                if numbers:
-                                    countdown_text = ' '.join([f"{n[0]} {n[1]}" for n in numbers])
-                                    countdown_match = True  # Flag that we found it
-                                    failure_reason = f"COURT_NOT_RELEASED: {countdown_text} until reservations open"
-                                    log(f"\n! FAILURE REASON: Court not yet released", 'INFO')
-                                    log(f"  Countdown: {countdown_text} until reservations open", 'INFO')
-
-                    if countdown_match and not failure_reason:
-                        if isinstance(countdown_match, bool):
-                            pass  # Already handled above
-                        else:
-                            countdown_text = countdown_match.group(1).strip()
-                            # Clean up the countdown text (remove extra whitespace)
-                            countdown_text = ' '.join(countdown_text.split())
+                    # Simple approach: look for "until reservations open" and extract text before it
+                    until_idx = page_text.lower().find('until reservations open')
+                    if until_idx > 0:
+                        # Extract the countdown text before "until reservations open"
+                        # Look back up to 100 chars for the countdown numbers
+                        context_before = page_text[max(0, until_idx-100):until_idx].strip()
+                        # Get the last line/segment which should contain the countdown
+                        countdown_text = context_before.split('\n')[-1].strip()
+                        # Clean up extra whitespace
+                        countdown_text = ' '.join(countdown_text.split())
+                        if countdown_text:
                             failure_reason = f"COURT_NOT_RELEASED: {countdown_text} until reservations open"
                             log(f"\n! FAILURE REASON: Court not yet released", 'INFO')
                             log(f"  Countdown: {countdown_text} until reservations open", 'INFO')
-                    elif 'until reservations open' in page_text.lower() and not failure_reason:
-                        # Countdown text is present but regex didn't capture - try harder
-                        until_idx = page_text.lower().find('until reservations open')
-                        if until_idx > 0:
-                            # Extract context before "until reservations open"
-                            context = page_text[max(0, until_idx-80):until_idx]
-                            # Look for any time units
-                            time_parts = re.findall(r'(\d+)\s*(days?|hours?|minutes?|seconds?|mins?|secs?)', context, re.IGNORECASE)
-                            if time_parts:
-                                countdown_text = ' '.join([f"{t[0]} {t[1]}" for t in time_parts])
-                                failure_reason = f"COURT_NOT_RELEASED: {countdown_text} until reservations open"
-                                log(f"\n! FAILURE REASON: Court not yet released", 'INFO')
-                                log(f"  Countdown: {countdown_text} until reservations open", 'INFO')
-                            else:
-                                failure_reason = "COURT_NOT_RELEASED: Reservations not yet open"
-                                log(f"\n! FAILURE REASON: Court not yet released (reservations not open)", 'INFO')
-                    elif 'reservations open' in page_text.lower() and not failure_reason:
-                        failure_reason = "COURT_NOT_RELEASED: Reservations not yet open"
-                        log(f"\n! FAILURE REASON: Court not yet released (reservations not open)", 'INFO')
 
                     # Priority 2: Check if user already has this court reserved (blue box with Edit)
                     # ONLY check this if no countdown was found (courts are released)
