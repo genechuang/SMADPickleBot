@@ -57,6 +57,13 @@ SHEET_NAME = os.environ.get('SMAD_SHEET_NAME', '2026 Pickleball')
 GCS_BUCKET_NAME = 'smad-pickleball-screenshots'
 GCS_PROJECT_ID = 'smad-pickleball'
 
+# Cloud Scheduler config
+SCHEDULER_LOCATION = 'us-west1'
+SCHEDULER_TIMEZONE = 'America/Los_Angeles'
+
+# Booking advance days limit (Athenaeum only allows 7 days in advance)
+BOOKING_ADVANCE_DAYS = 7
+
 # Bot signature (matching court booking summary)
 PICKLEBOT_SIGNATURE = "SMAD Picklebot🥒🏓🤖"
 
@@ -147,6 +154,8 @@ Available intents:
 - show_deadbeats: Show players with outstanding balances (no params)
 - show_balances: Show all balances or specific player (optional: player_name)
 - book_court: Book a court (params: date, time, duration_minutes, court - north/south/both)
+- list_jobs: List scheduled court bookings (no params)
+- cancel_job: Cancel a scheduled booking (params: job_id)
 - create_poll: Create weekly availability poll (no params)
 - send_reminders: Send reminders (params: type - vote/payment)
 - show_status: Show system status (no params)
@@ -160,8 +169,8 @@ For book_court:
 Return ONLY valid JSON (no markdown, no explanation):
 {{"intent": "...", "params": {{}}, "confirmation_required": true/false}}
 
-Set confirmation_required=true for: book_court, create_poll, send_reminders
-Set confirmation_required=false for: help, show_deadbeats, show_balances, show_status"""
+Set confirmation_required=true for: book_court, create_poll, send_reminders, cancel_job
+Set confirmation_required=false for: help, show_deadbeats, show_balances, show_status, list_jobs"""
 
     try:
         response = requests.post(
@@ -220,6 +229,14 @@ def parse_intent_fallback(command_text: str) -> dict:
     if text.startswith('book'):
         # Basic parsing: book 2/4 7pm 2hrs
         return {"intent": "book_court", "params": {"raw": text}, "confirmation_required": True}
+
+    # Jobs commands
+    if text == 'jobs' or text == 'scheduled':
+        return {"intent": "list_jobs", "params": {}, "confirmation_required": False}
+
+    if text.startswith('jobs cancel ') or text.startswith('cancel job '):
+        job_id = text.replace('jobs cancel ', '').replace('cancel job ', '').strip()
+        return {"intent": "cancel_job", "params": {"job_id": job_id}, "confirmation_required": False}
 
     if 'poll' in text and 'create' in text:
         return {"intent": "create_poll", "params": {}, "confirmation_required": True}
@@ -307,16 +324,19 @@ def handle_help() -> str:
 /pb deadbeats - Show players with outstanding balances
 /pb balance [name] - Show all balances or specific player
 /pb status - Show system status
+/pb jobs - List scheduled court bookings
 
-*Actions (require confirmation):*
+*Actions:*
 /pb book <date> <time> [duration] - Book court
   Example: /pb book 2/4 7pm 2hrs both courts
+  📅 If date is >7 days out, auto-schedules booking!
+/pb jobs cancel <job_id> - Cancel a scheduled booking
 /pb poll create - Create weekly availability poll
 /pb reminders - Send vote reminders
 
 *Options:*
---dry-run - Test command without sending messages
-  Example: /pb deadbeats --dry-run
+--dry-run - Test command without executing
+  Example: /pb book 2/15 7pm --dry-run
 
 Tip: You can use natural language!
   "/pb book next Tuesday at 7pm for 2 hours"
@@ -408,24 +428,444 @@ I didn't understand: "{raw_text}"
 Type /pb help to see available commands."""
 
 
-def handle_book_court_preview(params: dict) -> str:
-    """Generate preview message for court booking (confirmation required)."""
+def parse_booking_date(date_str: str) -> Optional[datetime]:
+    """
+    Parse a date string into a datetime object.
+    Handles formats like: 2/4, Feb 4, February 4, 2/4/25, 2/4/2025
+    """
+    if not date_str or date_str == 'unknown':
+        return None
+
+    now = datetime.now(PST)
+    current_year = now.year
+
+    # Clean up the date string
+    date_str = date_str.strip()
+
+    # Try various date formats
+    formats_to_try = [
+        '%m/%d/%Y',      # 2/4/2025
+        '%m/%d/%y',      # 2/4/25
+        '%m/%d',         # 2/4
+        '%m-%d-%Y',      # 2-4-2025
+        '%m-%d-%y',      # 2-4-25
+        '%m-%d',         # 2-4
+        '%B %d',         # February 4
+        '%B %d, %Y',     # February 4, 2025
+        '%b %d',         # Feb 4
+        '%b %d, %Y',     # Feb 4, 2025
+    ]
+
+    for fmt in formats_to_try:
+        try:
+            parsed = datetime.strptime(date_str, fmt)
+            # If no year was in the format, use current year (or next year if date passed)
+            if '%Y' not in fmt and '%y' not in fmt:
+                parsed = parsed.replace(year=current_year)
+                # If the date is in the past, assume next year
+                if PST.localize(parsed) < now:
+                    parsed = parsed.replace(year=current_year + 1)
+            return PST.localize(parsed)
+        except ValueError:
+            continue
+
+    return None
+
+
+def parse_booking_time(time_str: str) -> Optional[str]:
+    """
+    Parse a time string and return in HH:MM AM/PM format.
+    Handles formats like: 7pm, 7:00 PM, 19:00, 7 PM
+    """
+    if not time_str or time_str == 'unknown':
+        return None
+
+    time_str = time_str.strip().upper()
+
+    # Try various time formats
+    formats_to_try = [
+        '%I:%M %p',      # 7:00 PM
+        '%I:%M%p',       # 7:00PM
+        '%I %p',         # 7 PM
+        '%I%p',          # 7PM
+        '%H:%M',         # 19:00
+    ]
+
+    for fmt in formats_to_try:
+        try:
+            parsed = datetime.strptime(time_str, fmt)
+            return parsed.strftime('%I:%M %p').lstrip('0')
+        except ValueError:
+            continue
+
+    return None
+
+
+def get_scheduler_client():
+    """Initialize Cloud Scheduler client."""
+    try:
+        from google.cloud import scheduler_v1
+        return scheduler_v1.CloudSchedulerClient()
+    except ImportError:
+        logger.error("google-cloud-scheduler not installed")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to init scheduler client: {e}")
+        return None
+
+
+def create_scheduled_booking(booking_date: datetime, booking_time: str,
+                            duration: int, court: str, dry_run: bool = False) -> dict:
+    """
+    Create a Cloud Scheduler job to book court 7 days before the booking date.
+
+    Args:
+        booking_date: The target booking date (datetime with PST timezone)
+        booking_time: Time string like "7:00 PM"
+        duration: Duration in minutes
+        court: Court name (north/south/both)
+        dry_run: If True, don't actually create the job
+
+    Returns:
+        dict with status and details
+    """
+    now = datetime.now(PST)
+
+    # Calculate the scheduling date (7 days before booking)
+    schedule_date = booking_date - timedelta(days=BOOKING_ADVANCE_DAYS)
+
+    # If schedule date is in the past, we can't schedule it
+    if schedule_date.date() < now.date():
+        days_until = (booking_date.date() - now.date()).days
+        return {
+            'status': 'error',
+            'message': f'Booking date is only {days_until} days away - schedule date has passed'
+        }
+
+    # Format booking date/time for the workflow
+    booking_datetime_str = booking_date.strftime('%m/%d/%Y') + f' {booking_time}'
+
+    # Create unique job name based on booking details
+    job_id = f"book-court-{booking_date.strftime('%Y%m%d')}-{booking_time.replace(':', '').replace(' ', '').lower()}"
+    job_id = re.sub(r'[^a-z0-9-]', '', job_id.lower())
+
+    # Schedule for 12:01 AM PST on the schedule date
+    cron_schedule = f"1 0 {schedule_date.day} {schedule_date.month} *"
+
+    # Build the GitHub Actions workflow dispatch payload
+    workflow_payload = {
+        "ref": "main",
+        "inputs": {
+            "booking_date_time": booking_datetime_str,
+            "court": court if court != 'both' else '',
+            "duration": str(duration)
+        }
+    }
+
+    if dry_run:
+        return {
+            'status': 'dry_run',
+            'job_id': job_id,
+            'schedule_date': schedule_date.strftime('%m/%d/%Y'),
+            'cron': cron_schedule,
+            'booking_datetime': booking_datetime_str,
+            'court': court,
+            'duration': duration,
+            'message': f'Would schedule job "{job_id}" for {schedule_date.strftime("%m/%d/%Y")} at 12:01 AM'
+        }
+
+    try:
+        scheduler = get_scheduler_client()
+        if not scheduler:
+            return {'status': 'error', 'message': 'Cloud Scheduler client not available'}
+
+        from google.cloud import scheduler_v1
+        from google.protobuf import duration_pb2
+
+        parent = f"projects/{GCS_PROJECT_ID}/locations/{SCHEDULER_LOCATION}"
+        job_name = f"{parent}/jobs/{job_id}"
+
+        # GitHub API endpoint for workflow dispatch
+        github_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/court-booking.yml/dispatches"
+
+        job = scheduler_v1.Job(
+            name=job_name,
+            description=f"Auto-book court for {booking_datetime_str}",
+            schedule=cron_schedule,
+            time_zone=SCHEDULER_TIMEZONE,
+            http_target=scheduler_v1.HttpTarget(
+                uri=github_url,
+                http_method=scheduler_v1.HttpMethod.POST,
+                headers={
+                    "Authorization": f"Bearer {GITHUB_TOKEN}",
+                    "Accept": "application/vnd.github.v3+json",
+                    "Content-Type": "application/json"
+                },
+                body=json.dumps(workflow_payload).encode()
+            ),
+            retry_config=scheduler_v1.RetryConfig(
+                retry_count=3,
+                max_retry_duration=duration_pb2.Duration(seconds=300)
+            )
+        )
+
+        # Try to delete existing job with same name (in case of re-scheduling)
+        try:
+            scheduler.delete_job(name=job_name)
+            logger.info(f"Deleted existing job: {job_id}")
+        except Exception:
+            pass  # Job doesn't exist, that's fine
+
+        # Create the job
+        created_job = scheduler.create_job(parent=parent, job=job)
+        logger.info(f"Created scheduler job: {created_job.name}")
+
+        return {
+            'status': 'scheduled',
+            'job_id': job_id,
+            'schedule_date': schedule_date.strftime('%m/%d/%Y'),
+            'cron': cron_schedule,
+            'booking_datetime': booking_datetime_str,
+            'court': court,
+            'duration': duration
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to create scheduler job: {e}", exc_info=True)
+        return {'status': 'error', 'message': str(e)}
+
+
+def list_scheduled_jobs() -> list:
+    """
+    List all scheduled court booking jobs.
+
+    Returns:
+        List of job dicts with id, description, schedule, next_run
+    """
+    try:
+        scheduler = get_scheduler_client()
+        if not scheduler:
+            return []
+
+        parent = f"projects/{GCS_PROJECT_ID}/locations/{SCHEDULER_LOCATION}"
+        jobs = []
+
+        for job in scheduler.list_jobs(parent=parent):
+            # Only include court booking jobs
+            if not job.name.split('/')[-1].startswith('book-court-'):
+                continue
+
+            # Parse next run time
+            next_run = None
+            if job.schedule_time:
+                next_run = job.schedule_time.astimezone(PST).strftime('%m/%d/%Y %I:%M %p PST')
+
+            jobs.append({
+                'id': job.name.split('/')[-1],
+                'name': job.name,
+                'description': job.description,
+                'schedule': job.schedule,
+                'next_run': next_run,
+                'state': job.state.name if job.state else 'UNKNOWN'
+            })
+
+        return jobs
+
+    except Exception as e:
+        logger.error(f"Failed to list scheduler jobs: {e}", exc_info=True)
+        return []
+
+
+def cancel_scheduled_job(job_id: str) -> dict:
+    """
+    Cancel/delete a scheduled court booking job.
+
+    Args:
+        job_id: The job ID (e.g., "book-court-20250215-700pm")
+
+    Returns:
+        dict with status and message
+    """
+    try:
+        scheduler = get_scheduler_client()
+        if not scheduler:
+            return {'status': 'error', 'message': 'Cloud Scheduler client not available'}
+
+        job_name = f"projects/{GCS_PROJECT_ID}/locations/{SCHEDULER_LOCATION}/jobs/{job_id}"
+
+        # Verify it's a court booking job
+        if not job_id.startswith('book-court-'):
+            return {'status': 'error', 'message': 'Can only cancel court booking jobs'}
+
+        scheduler.delete_job(name=job_name)
+        logger.info(f"Deleted scheduler job: {job_id}")
+
+        return {'status': 'deleted', 'job_id': job_id}
+
+    except Exception as e:
+        error_msg = str(e)
+        if '404' in error_msg or 'not found' in error_msg.lower():
+            return {'status': 'error', 'message': f'Job not found: {job_id}'}
+        logger.error(f"Failed to delete scheduler job: {e}", exc_info=True)
+        return {'status': 'error', 'message': str(e)}
+
+
+def handle_list_jobs() -> str:
+    """Return list of scheduled court booking jobs."""
+    jobs = list_scheduled_jobs()
+
+    if not jobs:
+        return f"""*{PICKLEBOT_SIGNATURE} - Scheduled Jobs*
+
+No scheduled court bookings found.
+
+Use `/pb book <date> <time>` to schedule a booking."""
+
+    message = f"*{PICKLEBOT_SIGNATURE} - Scheduled Jobs*\n\n"
+
+    for job in jobs:
+        message += f"📋 *{job['id']}*\n"
+        if job['description']:
+            message += f"   {job['description']}\n"
+        message += f"   Schedule: {job['schedule']}\n"
+        if job['next_run']:
+            message += f"   Next run: {job['next_run']}\n"
+        message += f"   State: {job['state']}\n\n"
+
+    message += "_To cancel: /pb jobs cancel <job_id>_"
+
+    return message
+
+
+def handle_cancel_job(job_id: str) -> str:
+    """Cancel a scheduled court booking job."""
+    if not job_id:
+        return f"""*{PICKLEBOT_SIGNATURE} - Cancel Job*
+
+Please specify a job ID to cancel.
+
+Use `/pb jobs` to see scheduled jobs."""
+
+    result = cancel_scheduled_job(job_id)
+
+    if result['status'] == 'error':
+        return f"""*{PICKLEBOT_SIGNATURE} - Cancel Job*
+
+Failed to cancel job: {result.get('message', 'Unknown error')}"""
+
+    return f"""*{PICKLEBOT_SIGNATURE} - Cancel Job*
+
+✅ Job cancelled: {job_id}
+
+The scheduled booking has been removed."""
+
+
+def handle_book_court_preview(params: dict, dry_run: bool = False) -> str:
+    """
+    Generate preview message for court booking.
+
+    If booking date is >7 days in the future, offers to schedule automatic booking.
+    If ≤7 days, shows confirmation preview for immediate booking.
+    """
     # Extract parameters
-    date = params.get('date', 'unknown')
-    time = params.get('time', 'unknown')
+    date_str = params.get('date', 'unknown')
+    time_str = params.get('time', 'unknown')
     duration = params.get('duration_minutes', 120)
     court = params.get('court', 'both')
 
-    # TODO: Generate confirmation link
+    # Parse the booking date
+    booking_date = parse_booking_date(date_str)
+    booking_time = parse_booking_time(time_str)
+
+    if not booking_date:
+        return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+
+Could not parse booking date: "{date_str}"
+
+Please use a format like:
+- /pb book 2/4 7pm
+- /pb book Feb 4 7:00 PM"""
+
+    if not booking_time:
+        return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+
+Could not parse booking time: "{time_str}"
+
+Please use a format like:
+- /pb book 2/4 7pm
+- /pb book Feb 4 7:00 PM"""
+
+    now = datetime.now(PST)
+    days_until_booking = (booking_date.date() - now.date()).days
+
+    # Check if booking date is in the past
+    if days_until_booking < 0:
+        return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+
+Cannot book a date in the past: {booking_date.strftime('%m/%d/%Y')}"""
+
+    # Format for display
+    booking_datetime_display = f"{booking_date.strftime('%A, %B %d, %Y')} at {booking_time}"
+
+    # If booking is more than 7 days out, schedule it
+    if days_until_booking > BOOKING_ADVANCE_DAYS:
+        schedule_date = booking_date - timedelta(days=BOOKING_ADVANCE_DAYS)
+
+        result = create_scheduled_booking(
+            booking_date=booking_date,
+            booking_time=booking_time,
+            duration=duration,
+            court=court,
+            dry_run=dry_run
+        )
+
+        if result['status'] == 'error':
+            return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+
+Failed to schedule booking: {result.get('message', 'Unknown error')}"""
+
+        if result['status'] == 'dry_run':
+            return f"""*{PICKLEBOT_SIGNATURE} - Book Court* (DRY RUN)
+
+Booking date is {days_until_booking} days away (>{BOOKING_ADVANCE_DAYS} days).
+Would schedule automatic booking.
+
+*Booking Details:*
+📅 Date: {booking_datetime_display}
+⏱️ Duration: {duration} minutes
+🏓 Court: {court}
+
+*Scheduled Job:*
+🕐 Will run: {schedule_date.strftime('%A, %B %d, %Y')} at 12:01 AM PST
+📋 Job ID: {result['job_id']}"""
+
+        return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+
+✅ *Booking Scheduled!*
+
+Booking date is {days_until_booking} days away. Courts can only be booked {BOOKING_ADVANCE_DAYS} days in advance, so I've scheduled an automatic booking.
+
+*Booking Details:*
+📅 Date: {booking_datetime_display}
+⏱️ Duration: {duration} minutes
+🏓 Court: {court}
+
+*Scheduled Job:*
+🕐 Will run: {schedule_date.strftime('%A, %B %d, %Y')} at 12:01 AM PST
+📋 Job ID: {result['job_id']}
+
+The booking will be attempted automatically on the scheduled date."""
+
+    # Booking is within 7 days - can book now (requires confirmation)
     return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
 
 This action requires confirmation.
 
-*Details:*
-- Date: {date}
-- Time: {time}
-- Duration: {duration} minutes
-- Court: {court}
+*Booking Details:*
+📅 Date: {booking_datetime_display}
+⏱️ Duration: {duration} minutes
+🏓 Court: {court}
+📆 Days until: {days_until_booking}
 
 _Confirmation links coming in Phase 2_"""
 
@@ -501,9 +941,21 @@ def process_command(command_text: str, sender_data: dict, dry_run: bool = False)
     if intent == 'show_status':
         return build_result(handle_status(), intent=intent)
 
+    if intent == 'list_jobs':
+        return build_result(handle_list_jobs(), intent=intent)
+
+    if intent == 'cancel_job':
+        # Cancel job directly (no confirmation needed for simplicity)
+        return build_result(handle_cancel_job(params.get('job_id', '')), intent=intent)
+
     # Handle destructive commands (show preview, require confirmation)
     if intent == 'book_court':
-        return build_result(handle_book_court_preview(params), intent=intent, needs_confirmation=True)
+        # Pass dry_run to handle_book_court_preview for scheduled bookings
+        message = handle_book_court_preview(params, dry_run=is_dry_run)
+        # Check if booking was scheduled (>7 days out) - no confirmation needed
+        if "Booking Scheduled!" in message or "(DRY RUN)" in message:
+            return {'message': message, 'dry_run': is_dry_run, 'intent': intent, 'needs_confirmation': False}
+        return build_result(message, intent=intent, needs_confirmation=True)
 
     if intent == 'create_poll':
         return build_result(handle_create_poll_preview(), intent=intent, needs_confirmation=True)
