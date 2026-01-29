@@ -175,93 +175,6 @@ def upload_screenshot_to_gcs(image_bytes: bytes, run_id: int) -> str | None:
         return None
 
 
-def diagnose_booking_failure_with_screenshot(logs: str, booking_info: dict, screenshot_bytes: bytes) -> str:
-    """Generate diagnosis for booking failure using Claude Vision API with screenshot.
-
-    Args:
-        logs: Workflow logs
-        booking_info: Booking failure info dict
-        screenshot_bytes: PNG screenshot bytes
-
-    Returns:
-        Diagnosis string
-    """
-    if not ANTHROPIC_API_KEY:
-        return simple_booking_diagnosis(logs, booking_info)
-
-    import base64
-    image_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-
-    prompt = f"""Analyze this court booking failure screenshot and logs to provide a diagnosis.
-
-The screenshot shows the Athenaeum court booking calendar when the booking attempt failed.
-Key visual indicators:
-- Green boxes = available courts (clickable)
-- Gray text = already booked by others
-- Red/countdown = courts not yet released (>7 days out)
-- Blue boxes = your existing reservations
-
-Failed bookings: {len(booking_info.get('failed_bookings', []))}
-Successful bookings: {booking_info.get('successful_count', 0)}
-
-Log excerpt:
-{logs[-3000:]}
-
-Based on the screenshot and logs:
-1. What does the calendar show? (released, not released, booked, etc.)
-2. Why did the booking fail?
-
-Provide a concise 1-2 sentence explanation. Keep response under 200 characters."""
-
-    try:
-        response = requests.post(
-            'https://api.anthropic.com/v1/messages',
-            headers={
-                'x-api-key': ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json'
-            },
-            json={
-                'model': 'claude-3-haiku-20240307',
-                'max_tokens': 200,
-                'messages': [
-                    {
-                        'role': 'user',
-                        'content': [
-                            {
-                                'type': 'image',
-                                'source': {
-                                    'type': 'base64',
-                                    'media_type': 'image/png',
-                                    'data': image_base64
-                                }
-                            },
-                            {
-                                'type': 'text',
-                                'text': prompt
-                            }
-                        ]
-                    }
-                ]
-            },
-            timeout=60  # Vision requests may take longer
-        )
-
-        if response.status_code == 200:
-            result = response.json()
-            diagnosis = result.get('content', [{}])[0].get('text', '')
-            logger.info("Claude Vision diagnosis successful")
-            return diagnosis
-        else:
-            logger.warning(f"Claude Vision API error: {response.status_code} - {response.text[:200]}")
-
-    except Exception as e:
-        logger.error(f"Claude Vision diagnosis failed: {e}")
-
-    # Fall back to text-only diagnosis
-    return diagnose_booking_failure(logs, booking_info)
-
-
 def verify_github_signature(payload: bytes, signature: str) -> bool:
     """Verify GitHub webhook signature."""
     if not GITHUB_WEBHOOK_SECRET:
@@ -895,16 +808,12 @@ def gha_error_monitor(request):
 
                 # Determine diagnosis - prefer log-extracted reason (free & fast)
                 if booking_info.get('failure_reason'):
-                    # Use the reason extracted from logs (no Claude API call needed)
+                    # Use the reason extracted from logs (no API call needed)
                     diagnosis = booking_info['failure_reason']
                     logger.info(f"Using log-extracted diagnosis: {diagnosis}")
-                elif screenshot_bytes:
-                    # Fall back to Claude Vision for unknown failures
-                    logger.info("No specific reason in logs, using Claude Vision")
-                    diagnosis = diagnose_booking_failure_with_screenshot(logs, booking_info, screenshot_bytes)
                 else:
                     # Fall back to text-only Claude or simple diagnosis
-                    logger.info("No screenshot available, using text-only diagnosis")
+                    logger.info("No specific reason in logs, using text-only diagnosis")
                     diagnosis = diagnose_booking_failure(logs, booking_info)
 
                 # Build booking failure alert (includes screenshot URL if available)

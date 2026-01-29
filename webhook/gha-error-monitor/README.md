@@ -10,17 +10,19 @@ Cloud Function that monitors GitHub Actions workflow failures and sends diagnost
 - **WhatsApp Alerts**: Sends to Admin Dinkers group + personal DM
 - **Cost Efficient**: ~$0.01-0.05 per failure using Claude Haiku
 - **Booking Failure Detection**: Monitors Court Booking workflows for failed bookings even when workflow succeeds
-- **Screenshot Analysis**: Fetches booking calendar screenshots, uses Claude Vision for diagnosis, and sends images via WhatsApp
+- **Smart Log Extraction**: Detects failure reasons from logs (countdown, booked by others, already reserved) without API calls
+- **Screenshot Capture**: Uploads booking calendar screenshots to GCS for reference
 
 ## Architecture
 
 ```
-GitHub Actions ─── webhook ───> Cloud Function ───> Claude API (diagnosis)
+GitHub Actions ─── webhook ───> Cloud Function ───> Log Analysis (free)
       │                              │                    │
-      │                              │              Claude Vision
-      │                              │              (screenshot analysis)
+      │                              │              Claude API (fallback)
       │                              │
-      │                              └───> GREEN-API (WhatsApp alerts + images)
+      │                              ├───> GCS (screenshot storage)
+      │                              │
+      │                              └───> GREEN-API (WhatsApp alerts)
       │                                        │
       └─── logs + artifacts (screenshots) ───┘
 ```
@@ -110,13 +112,16 @@ terraform apply
 
 ## Cost
 
-- **Claude API (Haiku)**: ~$0.01-0.05 per failure diagnosis (text-only)
-- **Claude Vision (Haiku)**: ~$0.02-0.10 per diagnosis with screenshot
+- **Log-based diagnosis**: Free (extracts failure reason from logs)
+- **Claude API (Haiku)**: ~$0.01-0.05 per diagnosis (fallback only, rarely used)
 - **Cloud Function**: Free tier (2M invocations/month)
+- **GCS Storage**: Minimal (~$0.02/GB/month)
 - **GREEN-API**: Existing subscription
 
-Falls back to simple pattern matching if Claude API credits are exhausted or rate limited.
-Screenshot analysis is optional - falls back to text-only diagnosis if screenshot unavailable.
+Most booking failures are diagnosed from logs (free), including:
+- Court not yet released (countdown detected)
+- Already booked by someone else
+- Already reserved by you
 
 ## Alert Formats
 
