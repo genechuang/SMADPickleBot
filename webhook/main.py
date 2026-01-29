@@ -77,7 +77,7 @@ def is_picklebot_command(text: str) -> bool:
     return any(text_lower.startswith(prefix) for prefix in PICKLEBOT_PREFIXES)
 
 
-def forward_to_picklebot(command_text: str, sender_data: dict, dry_run: bool = False) -> dict:
+def forward_to_picklebot(command_text: str, sender_data: dict, dry_run: bool = False, is_admin_group: bool = True) -> dict:
     """
     Forward a picklebot command to the picklebot Cloud Function.
 
@@ -85,6 +85,7 @@ def forward_to_picklebot(command_text: str, sender_data: dict, dry_run: bool = F
         command_text: The full command text (e.g., "/pb help")
         sender_data: Sender info from the webhook (chatId, sender, senderName)
         dry_run: If True, don't send WhatsApp messages (for testing)
+        is_admin_group: True if from Admin Dinkers group (full access), False if from SMAD group (read-only)
 
     Returns:
         Response from picklebot or error dict
@@ -99,7 +100,8 @@ def forward_to_picklebot(command_text: str, sender_data: dict, dry_run: bool = F
             'chatId': sender_data.get('chatId', ''),
             'sender': sender_data.get('sender', ''),
             'senderName': sender_data.get('senderName', ''),
-            'dry_run': dry_run
+            'dry_run': dry_run,
+            'is_admin_group': is_admin_group
         }
 
         print(f"Forwarding to picklebot: {payload}", flush=True)
@@ -830,8 +832,11 @@ def webhook(request):
         sender_data = data.get('senderData', {})
         chat_id = sender_data.get('chatId', '')
 
-        # Check for picklebot commands from Admin Dinkers group
-        if ADMIN_DINKERS_GROUP_ID and chat_id == ADMIN_DINKERS_GROUP_ID:
+        # Check for picklebot commands from Admin Dinkers or SMAD group
+        is_admin_group = ADMIN_DINKERS_GROUP_ID and chat_id == ADMIN_DINKERS_GROUP_ID
+        is_smad_group = SMAD_WHATSAPP_GROUP_ID and chat_id == SMAD_WHATSAPP_GROUP_ID
+
+        if is_admin_group or is_smad_group:
             text = None
 
             # Handle both textMessage and extendedTextMessage types
@@ -841,8 +846,8 @@ def webhook(request):
                 text = message_data.get('extendedTextMessageData', {}).get('text', '')
 
             if text and is_picklebot_command(text):
-                print(f"Picklebot command detected: {text}", flush=True)
-                result = forward_to_picklebot(text, sender_data)
+                print(f"Picklebot command detected from {'Admin' if is_admin_group else 'SMAD'} group: {text}", flush=True)
+                result = forward_to_picklebot(text, sender_data, is_admin_group=is_admin_group)
                 return result, 200
 
         # Filter by group ID - only process votes from SMAD group (not Admin Dinkers)

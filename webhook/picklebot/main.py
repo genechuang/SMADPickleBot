@@ -365,9 +365,14 @@ def get_player_balances() -> list:
 
 
 # Command handlers
-def handle_help() -> str:
-    """Return help message with available commands."""
-    return f"""*{PICKLEBOT_SIGNATURE} Commands*
+def handle_help(is_admin_group: bool = True) -> str:
+    """Return help message with available commands.
+
+    Args:
+        is_admin_group: If True, show all commands. If False, hide action commands.
+    """
+    if is_admin_group:
+        return f"""*{PICKLEBOT_SIGNATURE} Commands*
 
 *Read-only:*
 /pb help - Show this message
@@ -394,6 +399,23 @@ def handle_help() -> str:
 Tip: You can use natural language!
   "/pb tell me a joke"
   "/pb book next Tuesday at 7pm"
+"""
+    else:
+        # Restricted help for non-admin groups (SMAD Pickleball)
+        return f"""*{PICKLEBOT_SIGNATURE} Commands*
+
+*Read-only:*
+/pb help - Show this message
+/pb deadbeats - Show players with outstanding balances
+/pb balance [name] - Show all balances or specific player
+/pb status - Show system status
+/pb jobs - List scheduled court bookings
+
+*Fun:*
+/pb joke - Tell a pickleball joke 🎭
+/pb meme - Post a pickleball meme 📸
+
+_Action commands are only available in Admin Dinkers._
 """
 
 
@@ -479,6 +501,15 @@ def handle_unknown(raw_text: str) -> str:
 I didn't understand: "{raw_text}"
 
 Type /pb help to see available commands."""
+
+
+def handle_action_not_available(intent: str) -> str:
+    """Return message when an action command is used in a non-admin group."""
+    return f"""*{PICKLEBOT_SIGNATURE}*
+
+This command is only available in Admin Dinkers.
+
+Type /pb help to see available commands here."""
 
 
 def generate_pickleball_joke() -> str:
@@ -1116,13 +1147,14 @@ Will send {reminder_type} reminders to players who haven't responded.
 _Confirmation links coming in Phase 2_"""
 
 
-def process_command(command_text: str, sender_data: dict, dry_run: bool = False) -> dict:
+def process_command(command_text: str, sender_data: dict, dry_run: bool = False, is_admin_group: bool = True) -> dict:
     """Process a picklebot command and return response.
 
     Args:
         command_text: The command text (with or without dry run flag)
         sender_data: Sender info from webhook
         dry_run: If True, don't execute actions (external override)
+        is_admin_group: If True, allow all commands. If False, block action commands.
 
     Returns:
         dict with message, intent, and dry_run status
@@ -1134,7 +1166,7 @@ def process_command(command_text: str, sender_data: dict, dry_run: bool = False)
     if is_dry_run:
         logger.info(f"[DRY RUN] Processing command: {cleaned_command}")
     else:
-        logger.info(f"Processing command: {cleaned_command}")
+        logger.info(f"Processing command: {cleaned_command} (admin_group={is_admin_group})")
 
     # Parse intent from cleaned command
     intent_data = parse_intent_with_claude(cleaned_command)
@@ -1152,9 +1184,16 @@ def process_command(command_text: str, sender_data: dict, dry_run: bool = False)
         result.update(kwargs)
         return result
 
+    # Define action commands that are only available in admin group
+    ACTION_INTENTS = {'book_court', 'cancel_job', 'create_poll', 'send_reminders'}
+
+    # Block action commands in non-admin groups
+    if not is_admin_group and intent in ACTION_INTENTS:
+        return build_result(handle_action_not_available(intent), intent=intent)
+
     # Handle read-only commands directly
     if intent == 'help':
-        return build_result(handle_help(), intent=intent)
+        return build_result(handle_help(is_admin_group=is_admin_group), intent=intent)
 
     if intent == 'show_deadbeats':
         return build_result(handle_deadbeats(), intent=intent)
@@ -1228,8 +1267,9 @@ def picklebot_webhook(request):
         if not data:
             return {'error': 'No JSON payload'}, 400
 
-        # Check for dry_run parameter in request
+        # Check for dry_run and is_admin_group parameters in request
         dry_run = data.get('dry_run', False)
+        is_admin_group = data.get('is_admin_group', True)  # Default to admin for backward compatibility
 
         # Check if this is a direct command (from routing) or a webhook payload
         if 'command' in data:
@@ -1242,14 +1282,16 @@ def picklebot_webhook(request):
                 'senderName': data.get('senderName', '')
             }
         else:
-            # Full GREEN-API webhook payload
+            # Full GREEN-API webhook payload (direct call to picklebot)
             sender_data = data.get('senderData', {})
             message_data = data.get('messageData', {})
             chat_id = sender_data.get('chatId', '')
 
-            # Only process from Admin Dinkers group
+            # For direct webhook calls, only allow from Admin Dinkers group
             if ADMIN_DINKERS_GROUP_ID and chat_id != ADMIN_DINKERS_GROUP_ID:
                 return {'status': 'ignored', 'reason': 'not_admin_group'}, 200
+
+            is_admin_group = True  # Direct webhook calls are from admin group
 
             # Extract text message
             type_message = message_data.get('typeMessage', '')
@@ -1271,7 +1313,7 @@ def picklebot_webhook(request):
             command_text = text
 
         # Process the command
-        result = process_command(command_text, sender_data, dry_run=dry_run)
+        result = process_command(command_text, sender_data, dry_run=dry_run, is_admin_group=is_admin_group)
 
         # Get effective dry_run status (could be from param or command text)
         is_dry_run = result.get('dry_run', dry_run)
