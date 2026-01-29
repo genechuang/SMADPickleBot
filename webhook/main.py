@@ -832,14 +832,18 @@ def webhook(request):
 
         # Check for picklebot commands from Admin Dinkers group
         if ADMIN_DINKERS_GROUP_ID and chat_id == ADMIN_DINKERS_GROUP_ID:
-            if type_message == 'textMessage':
-                text_message_data = message_data.get('textMessageData', {})
-                text = text_message_data.get('textMessage', '')
+            text = None
 
-                if is_picklebot_command(text):
-                    print(f"Picklebot command detected: {text}", flush=True)
-                    result = forward_to_picklebot(text, sender_data)
-                    return result, 200
+            # Handle both textMessage and extendedTextMessage types
+            if type_message == 'textMessage':
+                text = message_data.get('textMessageData', {}).get('textMessage', '')
+            elif type_message == 'extendedTextMessage':
+                text = message_data.get('extendedTextMessageData', {}).get('text', '')
+
+            if text and is_picklebot_command(text):
+                print(f"Picklebot command detected: {text}", flush=True)
+                result = forward_to_picklebot(text, sender_data)
+                return result, 200
 
         # Filter by group ID - only process votes from SMAD group (not Admin Dinkers)
         if SMAD_WHATSAPP_GROUP_ID and chat_id != SMAD_WHATSAPP_GROUP_ID:
