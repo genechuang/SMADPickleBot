@@ -1238,7 +1238,7 @@ class AthenaeumBooking:
                 log(f"\nCheck booking_02_date_entered.png to see available slots", 'INFO')
                 log(f"(Green boxes = available, Gray text = booked by others)", 'INFO')
                 
-#                await self.page.screenshot(path='booking_no_slot_found.png', full_page=True)
+                await self.page.screenshot(path='booking_no_slot_found.png', full_page=True)
                 
                 return False
             

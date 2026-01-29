@@ -51,6 +51,9 @@ MAX_LOG_SIZE = 15000  # ~15KB, roughly 3-4K tokens
 # Workflows to check for booking failures even when successful
 BOOKING_WORKFLOWS = ['Court Booking']
 
+# Screenshot filename to look for in booking failures
+BOOKING_FAILURE_SCREENSHOT = 'booking_no_slot_found.png'
+
 # Patterns indicating booking failures in logs
 BOOKING_FAILURE_PATTERNS = [
     'NO AVAILABLE SLOT FOUND',
@@ -58,6 +61,251 @@ BOOKING_FAILURE_PATTERNS = [
     'Could not find an available',
     'Failed: ',  # e.g., "Failed: 1"
 ]
+
+
+def fetch_screenshot_artifact(run_id: int, filename: str = BOOKING_FAILURE_SCREENSHOT) -> bytes | None:
+    """Fetch a screenshot from workflow artifacts.
+
+    Args:
+        run_id: The workflow run ID
+        filename: The screenshot filename to look for
+
+    Returns:
+        Image bytes if found, None otherwise
+    """
+    if not GITHUB_TOKEN:
+        logger.error("GITHUB_TOKEN not configured")
+        return None
+
+    headers = {
+        'Authorization': f'token {GITHUB_TOKEN}',
+        'Accept': 'application/vnd.github.v3+json'
+    }
+
+    # List artifacts for this run
+    artifacts_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/runs/{run_id}/artifacts"
+
+    try:
+        response = requests.get(artifacts_url, headers=headers, timeout=30)
+
+        if response.status_code != 200:
+            logger.warning(f"Failed to list artifacts: {response.status_code}")
+            return None
+
+        artifacts = response.json().get('artifacts', [])
+
+        # Find the booking-screenshots artifact
+        screenshot_artifact = None
+        for artifact in artifacts:
+            if 'booking-screenshots' in artifact.get('name', ''):
+                screenshot_artifact = artifact
+                break
+
+        if not screenshot_artifact:
+            logger.info("No booking-screenshots artifact found")
+            return None
+
+        # Download the artifact
+        download_url = screenshot_artifact.get('archive_download_url')
+        if not download_url:
+            return None
+
+        logger.info(f"Downloading artifact: {screenshot_artifact.get('name')}")
+        download_response = requests.get(download_url, headers=headers, allow_redirects=True, timeout=60)
+
+        if download_response.status_code != 200:
+            logger.warning(f"Failed to download artifact: {download_response.status_code}")
+            return None
+
+        # Extract the specific file from the zip
+        import zipfile
+        import io
+
+        with zipfile.ZipFile(io.BytesIO(download_response.content)) as z:
+            for name in z.namelist():
+                if name.endswith(filename) or name == filename:
+                    logger.info(f"Found screenshot: {name}")
+                    return z.read(name)
+
+        logger.info(f"Screenshot {filename} not found in artifact")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error fetching screenshot artifact: {e}")
+        return None
+
+
+def upload_to_greenapi(image_bytes: bytes, filename: str) -> str | None:
+    """Upload image to GREEN-API and get a URL for sending.
+
+    Args:
+        image_bytes: The image data
+        filename: Filename for the upload
+
+    Returns:
+        URL to the uploaded file, or None if failed
+    """
+    if not GREENAPI_INSTANCE_ID or not GREENAPI_API_TOKEN:
+        logger.error("GREEN-API credentials not configured")
+        return None
+
+    url = f"https://api.green-api.com/waInstance{GREENAPI_INSTANCE_ID}/uploadFile/{GREENAPI_API_TOKEN}"
+
+    try:
+        # Determine content type
+        content_type = 'image/png' if filename.endswith('.png') else 'image/jpeg'
+
+        response = requests.post(
+            url,
+            files={'file': (filename, image_bytes, content_type)},
+            timeout=60
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            file_url = result.get('urlFile')
+            if file_url:
+                logger.info(f"Screenshot uploaded to GREEN-API: {file_url[:50]}...")
+                return file_url
+
+        logger.warning(f"GREEN-API upload failed: {response.status_code} - {response.text}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error uploading to GREEN-API: {e}")
+        return None
+
+
+def send_whatsapp_image(recipient_id: str, image_url: str, caption: str) -> bool:
+    """Send an image via WhatsApp using GREEN-API.
+
+    Args:
+        recipient_id: WhatsApp chat ID
+        image_url: URL to the image
+        caption: Caption text for the image
+
+    Returns:
+        True if sent successfully
+    """
+    if not GREENAPI_INSTANCE_ID or not GREENAPI_API_TOKEN:
+        logger.error("GREEN-API credentials not configured")
+        return False
+
+    if not recipient_id:
+        logger.warning("No recipient ID provided")
+        return False
+
+    url = f"https://api.green-api.com/waInstance{GREENAPI_INSTANCE_ID}/sendFileByUrl/{GREENAPI_API_TOKEN}"
+
+    try:
+        response = requests.post(
+            url,
+            json={
+                'chatId': recipient_id,
+                'urlFile': image_url,
+                'fileName': 'booking_screenshot.png',
+                'caption': caption
+            },
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            logger.info(f"Image sent to {recipient_id}")
+            return True
+        else:
+            logger.error(f"Failed to send image: {response.status_code} - {response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"WhatsApp image send failed: {e}")
+        return False
+
+
+def diagnose_booking_failure_with_screenshot(logs: str, booking_info: dict, screenshot_bytes: bytes) -> str:
+    """Generate diagnosis for booking failure using Claude Vision API with screenshot.
+
+    Args:
+        logs: Workflow logs
+        booking_info: Booking failure info dict
+        screenshot_bytes: PNG screenshot bytes
+
+    Returns:
+        Diagnosis string
+    """
+    if not ANTHROPIC_API_KEY:
+        return simple_booking_diagnosis(logs, booking_info)
+
+    import base64
+    image_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+
+    prompt = f"""Analyze this court booking failure screenshot and logs to provide a diagnosis.
+
+The screenshot shows the Athenaeum court booking calendar when the booking attempt failed.
+Key visual indicators:
+- Green boxes = available courts (clickable)
+- Gray text = already booked by others
+- Red/countdown = courts not yet released (>7 days out)
+- Blue boxes = your existing reservations
+
+Failed bookings: {len(booking_info.get('failed_bookings', []))}
+Successful bookings: {booking_info.get('successful_count', 0)}
+
+Log excerpt:
+{logs[-3000:]}
+
+Based on the screenshot and logs:
+1. What does the calendar show? (released, not released, booked, etc.)
+2. Why did the booking fail?
+
+Provide a concise 1-2 sentence explanation. Keep response under 200 characters."""
+
+    try:
+        response = requests.post(
+            'https://api.anthropic.com/v1/messages',
+            headers={
+                'x-api-key': ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json'
+            },
+            json={
+                'model': 'claude-3-haiku-20240307',
+                'max_tokens': 200,
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': [
+                            {
+                                'type': 'image',
+                                'source': {
+                                    'type': 'base64',
+                                    'media_type': 'image/png',
+                                    'data': image_base64
+                                }
+                            },
+                            {
+                                'type': 'text',
+                                'text': prompt
+                            }
+                        ]
+                    }
+                ]
+            },
+            timeout=60  # Vision requests may take longer
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            diagnosis = result.get('content', [{}])[0].get('text', '')
+            logger.info("Claude Vision diagnosis successful")
+            return diagnosis
+        else:
+            logger.warning(f"Claude Vision API error: {response.status_code} - {response.text[:200]}")
+
+    except Exception as e:
+        logger.error(f"Claude Vision diagnosis failed: {e}")
+
+    # Fall back to text-only diagnosis
+    return diagnose_booking_failure(logs, booking_info)
 
 
 def verify_github_signature(payload: bytes, signature: str) -> bool:
@@ -652,8 +900,20 @@ def gha_error_monitor(request):
             if booking_info['has_failures']:
                 logger.info(f"Booking failures detected: {booking_info['failed_count']} failed")
 
-                # Get diagnosis for booking failure
-                diagnosis = diagnose_booking_failure(logs, booking_info)
+                # Try to fetch screenshot artifact
+                screenshot_bytes = fetch_screenshot_artifact(run_id, BOOKING_FAILURE_SCREENSHOT)
+                screenshot_url = None
+
+                if screenshot_bytes:
+                    logger.info(f"Screenshot found: {len(screenshot_bytes)} bytes")
+                    # Upload to GREEN-API for sending
+                    screenshot_url = upload_to_greenapi(screenshot_bytes, BOOKING_FAILURE_SCREENSHOT)
+
+                    # Use vision diagnosis with screenshot
+                    diagnosis = diagnose_booking_failure_with_screenshot(logs, booking_info, screenshot_bytes)
+                else:
+                    logger.info("No screenshot available, using text-only diagnosis")
+                    diagnosis = diagnose_booking_failure(logs, booking_info)
 
                 # Build booking failure alert
                 alert_message = build_booking_failure_message(
@@ -664,10 +924,32 @@ def gha_error_monitor(request):
                 )
 
                 # Send notifications
-                sent_group = send_whatsapp_message(ADMIN_DINKERS_GROUP_ID, alert_message) if ADMIN_DINKERS_GROUP_ID else False
-                sent_dm = send_whatsapp_message(ADMIN_PHONE_ID, alert_message) if ADMIN_PHONE_ID else False
+                sent_group = False
+                sent_dm = False
+                sent_group_image = False
+                sent_dm_image = False
 
-                logger.info(f"Booking failure alert sent: group={sent_group}, dm={sent_dm}")
+                if ADMIN_DINKERS_GROUP_ID:
+                    sent_group = send_whatsapp_message(ADMIN_DINKERS_GROUP_ID, alert_message)
+                    # Send screenshot if available
+                    if screenshot_url:
+                        sent_group_image = send_whatsapp_image(
+                            ADMIN_DINKERS_GROUP_ID,
+                            screenshot_url,
+                            "Booking calendar screenshot"
+                        )
+
+                if ADMIN_PHONE_ID:
+                    sent_dm = send_whatsapp_message(ADMIN_PHONE_ID, alert_message)
+                    # Send screenshot if available
+                    if screenshot_url:
+                        sent_dm_image = send_whatsapp_image(
+                            ADMIN_PHONE_ID,
+                            screenshot_url,
+                            "Booking calendar screenshot"
+                        )
+
+                logger.info(f"Booking failure alert sent: group={sent_group}, dm={sent_dm}, images: group={sent_group_image}, dm={sent_dm_image}")
                 return {
                     'status': 'processed',
                     'type': 'booking_failure',
@@ -675,7 +957,13 @@ def gha_error_monitor(request):
                     'run_id': run_id,
                     'booking_info': booking_info,
                     'diagnosis': diagnosis,
-                    'notifications': {'group': sent_group, 'dm': sent_dm}
+                    'screenshot_attached': screenshot_url is not None,
+                    'notifications': {
+                        'group': sent_group,
+                        'dm': sent_dm,
+                        'group_image': sent_group_image,
+                        'dm_image': sent_dm_image
+                    }
                 }, 200
             else:
                 logger.info(f"No booking failures detected in {workflow_name}")

@@ -10,15 +10,19 @@ Cloud Function that monitors GitHub Actions workflow failures and sends diagnost
 - **WhatsApp Alerts**: Sends to Admin Dinkers group + personal DM
 - **Cost Efficient**: ~$0.01-0.05 per failure using Claude Haiku
 - **Booking Failure Detection**: Monitors Court Booking workflows for failed bookings even when workflow succeeds
+- **Screenshot Analysis**: Fetches booking calendar screenshots, uses Claude Vision for diagnosis, and sends images via WhatsApp
 
 ## Architecture
 
 ```
 GitHub Actions ─── webhook ───> Cloud Function ───> Claude API (diagnosis)
+      │                              │                    │
+      │                              │              Claude Vision
+      │                              │              (screenshot analysis)
       │                              │
-      │                              └───> GREEN-API (WhatsApp alerts)
+      │                              └───> GREEN-API (WhatsApp alerts + images)
       │                                        │
-      └─── logs via API ─────────────────────┘
+      └─── logs + artifacts (screenshots) ───┘
 ```
 
 ## Setup
@@ -106,11 +110,13 @@ terraform apply
 
 ## Cost
 
-- **Claude API (Haiku)**: ~$0.01-0.05 per failure diagnosis
+- **Claude API (Haiku)**: ~$0.01-0.05 per failure diagnosis (text-only)
+- **Claude Vision (Haiku)**: ~$0.02-0.10 per diagnosis with screenshot
 - **Cloud Function**: Free tier (2M invocations/month)
 - **GREEN-API**: Existing subscription
 
 Falls back to simple pattern matching if Claude API credits are exhausted or rate limited.
+Screenshot analysis is optional - falls back to text-only diagnosis if screenshot unavailable.
 
 ## Alert Formats
 
@@ -137,7 +143,12 @@ Run: https://github.com/genechuang/SMADPickleBot/actions/runs/12345
 
 ### Booking Failure Alert
 
-Sent when Court Booking workflow succeeds but one or more bookings fail (court unavailable):
+Sent when Court Booking workflow succeeds but one or more bookings fail (court unavailable).
+Includes a screenshot of the booking calendar (if available) showing:
+- Green boxes = available courts
+- Gray text = already booked by others
+- Red with countdown = not yet released (>7 days out)
+- Blue boxes = your existing reservations
 
 ```
 [BOOKING ALERT] Court Booking Failed
@@ -152,6 +163,8 @@ Reason: Court not yet released (>7 days out)
 
 Run: https://github.com/genechuang/SMADPickleBot/actions/runs/12345
 ```
+
+A screenshot (`booking_no_slot_found.png`) is also sent showing the calendar state at the time of the failure.
 
 ## Testing
 
