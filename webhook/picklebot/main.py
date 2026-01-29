@@ -1662,12 +1662,15 @@ Failed to cancel job: {result.get('message', 'Unknown error')}"""
 The scheduled booking has been removed."""
 
 
-def handle_book_court_preview(params: dict, dry_run: bool = False) -> str:
+def handle_book_court_preview(params: dict, chat_id: str = "", dry_run: bool = False) -> dict:
     """
     Generate preview message for court booking.
 
     If booking date is >7 days in the future, offers to schedule automatic booking.
-    If ≤7 days, shows confirmation preview for immediate booking.
+    If ≤7 days, shows confirmation preview with confirmation link.
+
+    Returns:
+        dict with 'message' and optionally 'token' for confirmation
     """
     # Extract parameters
     date_str = params.get('date', 'unknown')
@@ -1680,31 +1683,31 @@ def handle_book_court_preview(params: dict, dry_run: bool = False) -> str:
     booking_time = parse_booking_time(time_str)
 
     if not booking_date:
-        return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+        return {'message': f"""*{PICKLEBOT_SIGNATURE} - Book Court*
 
 Could not parse booking date: "{date_str}"
 
 Please use a format like:
 - /pb book 2/4 7pm
-- /pb book Feb 4 7:00 PM"""
+- /pb book Feb 4 7:00 PM"""}
 
     if not booking_time:
-        return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+        return {'message': f"""*{PICKLEBOT_SIGNATURE} - Book Court*
 
 Could not parse booking time: "{time_str}"
 
 Please use a format like:
 - /pb book 2/4 7pm
-- /pb book Feb 4 7:00 PM"""
+- /pb book Feb 4 7:00 PM"""}
 
     now = datetime.now(PST)
     days_until_booking = (booking_date.date() - now.date()).days
 
     # Check if booking date is in the past
     if days_until_booking < 0:
-        return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+        return {'message': f"""*{PICKLEBOT_SIGNATURE} - Book Court*
 
-Cannot book a date in the past: {booking_date.strftime('%m/%d/%Y')}"""
+Cannot book a date in the past: {booking_date.strftime('%m/%d/%Y')}"""}
 
     # Format for display
     booking_datetime_display = f"{booking_date.strftime('%A, %B %d, %Y')} at {booking_time}"
@@ -1722,12 +1725,12 @@ Cannot book a date in the past: {booking_date.strftime('%m/%d/%Y')}"""
         )
 
         if result['status'] == 'error':
-            return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+            return {'message': f"""*{PICKLEBOT_SIGNATURE} - Book Court*
 
-Failed to schedule booking: {result.get('message', 'Unknown error')}"""
+Failed to schedule booking: {result.get('message', 'Unknown error')}"""}
 
         if result['status'] == 'dry_run':
-            return f"""*{PICKLEBOT_SIGNATURE} - Book Court* (DRY RUN)
+            return {'message': f"""*{PICKLEBOT_SIGNATURE} - Book Court* (DRY RUN)
 
 Booking date is {days_until_booking} days away (>{BOOKING_ADVANCE_DAYS} days).
 Would schedule automatic booking.
@@ -1739,9 +1742,9 @@ Would schedule automatic booking.
 
 *Scheduled Job:*
 🕐 Will run: {schedule_date.strftime('%A, %B %d, %Y')} at 12:01 AM PST
-📋 Job ID: {result['job_id']}"""
+📋 Job ID: {result['job_id']}""", 'scheduled': True}
 
-        return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+        return {'message': f"""*{PICKLEBOT_SIGNATURE} - Book Court*
 
 ✅ *Booking Scheduled!*
 
@@ -1756,12 +1759,25 @@ Booking date is {days_until_booking} days away. Courts can only be booked {BOOKI
 🕐 Will run: {schedule_date.strftime('%A, %B %d, %Y')} at 12:01 AM PST
 📋 Job ID: {result['job_id']}
 
-The booking will be attempted automatically on the scheduled date."""
+The booking will be attempted automatically on the scheduled date.""", 'scheduled': True}
 
     # Booking is within 7 days - can book now (requires confirmation)
-    return f"""*{PICKLEBOT_SIGNATURE} - Book Court*
-
-This action requires confirmation.
+    # Store pending action and generate confirmation link
+    if not dry_run:
+        action_data = {
+            'intent': 'book_court',
+            'params': params,
+            'chat_id': chat_id,
+            'display': {
+                'date': booking_datetime_display,
+                'duration': duration,
+                'court': court
+            }
+        }
+        token = store_pending_action(action_data)
+        if token:
+            confirm_url = generate_confirmation_url(token)
+            return {'message': f"""*{PICKLEBOT_SIGNATURE} - Book Court*
 
 *Booking Details:*
 📅 Date: {booking_datetime_display}
@@ -1769,29 +1785,82 @@ This action requires confirmation.
 🏓 Court: {court}
 📆 Days until: {days_until_booking}
 
-_Confirmation links coming in Phase 2_"""
+👉 *Click to confirm:* {confirm_url}
+
+_Link expires in 24 hours_""", 'token': token, 'needs_confirmation': True}
+
+    # Fallback if storage failed or dry run
+    return {'message': f"""*{PICKLEBOT_SIGNATURE} - Book Court*
+
+*Booking Details:*
+📅 Date: {booking_datetime_display}
+⏱️ Duration: {duration} minutes
+🏓 Court: {court}
+📆 Days until: {days_until_booking}
+
+_Could not generate confirmation link. Try again later._""", 'needs_confirmation': True}
 
 
-def handle_create_poll_preview() -> str:
-    """Generate preview message for poll creation (confirmation required)."""
-    return f"""*{PICKLEBOT_SIGNATURE} - Create Poll*
+def handle_create_poll_preview(chat_id: str = "", dry_run: bool = False) -> dict:
+    """Generate preview message for poll creation (confirmation required).
 
-This action requires confirmation.
+    Returns:
+        dict with 'message' and optionally 'token' for confirmation
+    """
+    if not dry_run:
+        action_data = {
+            'intent': 'create_poll',
+            'params': {},
+            'chat_id': chat_id
+        }
+        token = store_pending_action(action_data)
+        if token:
+            confirm_url = generate_confirmation_url(token)
+            return {'message': f"""*{PICKLEBOT_SIGNATURE} - Create Poll*
 
 Will create a weekly availability poll in the SMAD group.
 
-_Confirmation links coming in Phase 2_"""
+👉 *Click to confirm:* {confirm_url}
+
+_Link expires in 24 hours_""", 'token': token, 'needs_confirmation': True}
+
+    # Fallback if storage failed or dry run
+    return {'message': f"""*{PICKLEBOT_SIGNATURE} - Create Poll*
+
+Will create a weekly availability poll in the SMAD group.
+
+_Could not generate confirmation link. Try again later._""", 'needs_confirmation': True}
 
 
-def handle_send_reminders_preview(reminder_type: str) -> str:
-    """Generate preview message for sending reminders (confirmation required)."""
-    return f"""*{PICKLEBOT_SIGNATURE} - Send Reminders*
+def handle_send_reminders_preview(reminder_type: str, chat_id: str = "", dry_run: bool = False) -> dict:
+    """Generate preview message for sending reminders (confirmation required).
 
-This action requires confirmation.
+    Returns:
+        dict with 'message' and optionally 'token' for confirmation
+    """
+    if not dry_run:
+        action_data = {
+            'intent': 'send_reminders',
+            'params': {'type': reminder_type},
+            'chat_id': chat_id
+        }
+        token = store_pending_action(action_data)
+        if token:
+            confirm_url = generate_confirmation_url(token)
+            return {'message': f"""*{PICKLEBOT_SIGNATURE} - Send Reminders*
 
 Will send {reminder_type} reminders to players who haven't responded.
 
-_Confirmation links coming in Phase 2_"""
+👉 *Click to confirm:* {confirm_url}
+
+_Link expires in 24 hours_""", 'token': token, 'needs_confirmation': True}
+
+    # Fallback if storage failed or dry run
+    return {'message': f"""*{PICKLEBOT_SIGNATURE} - Send Reminders*
+
+Will send {reminder_type} reminders to players who haven't responded.
+
+_Could not generate confirmation link. Try again later._""", 'needs_confirmation': True}
 
 
 def process_command(command_text: str, sender_data: dict, dry_run: bool = False, is_admin_group: bool = True) -> dict:
@@ -1877,22 +1946,181 @@ def process_command(command_text: str, sender_data: dict, dry_run: bool = False,
         return build_result(message, intent=intent)
 
     # Handle destructive commands (show preview, require confirmation)
+    chat_id = sender_data.get('chatId', ADMIN_DINKERS_GROUP_ID)
+
     if intent == 'book_court':
-        # Pass dry_run to handle_book_court_preview for scheduled bookings
-        message = handle_book_court_preview(params, dry_run=is_dry_run)
+        # Pass chat_id and dry_run to handle_book_court_preview
+        result = handle_book_court_preview(params, chat_id=chat_id, dry_run=is_dry_run)
+        message = result.get('message', '')
         # Check if booking was scheduled (>7 days out) - no confirmation needed
-        if "Booking Scheduled!" in message or "(DRY RUN)" in message:
+        if result.get('scheduled'):
+            if is_dry_run:
+                message = f"[DRY RUN]\n\n{message}"
             return {'message': message, 'dry_run': is_dry_run, 'intent': intent, 'needs_confirmation': False}
-        return build_result(message, intent=intent, needs_confirmation=True)
+        # Within 7 days - needs confirmation
+        if is_dry_run:
+            message = f"[DRY RUN]\n\n{message}"
+        return {'message': message, 'dry_run': is_dry_run, 'intent': intent,
+                'needs_confirmation': result.get('needs_confirmation', True),
+                'token': result.get('token')}
 
     if intent == 'create_poll':
-        return build_result(handle_create_poll_preview(), intent=intent, needs_confirmation=True)
+        result = handle_create_poll_preview(chat_id=chat_id, dry_run=is_dry_run)
+        message = result.get('message', '')
+        if is_dry_run:
+            message = f"[DRY RUN]\n\n{message}"
+        return {'message': message, 'dry_run': is_dry_run, 'intent': intent,
+                'needs_confirmation': result.get('needs_confirmation', True),
+                'token': result.get('token')}
 
     if intent == 'send_reminders':
-        return build_result(handle_send_reminders_preview(params.get('type', 'vote')), intent=intent, needs_confirmation=True)
+        result = handle_send_reminders_preview(params.get('type', 'vote'), chat_id=chat_id, dry_run=is_dry_run)
+        message = result.get('message', '')
+        if is_dry_run:
+            message = f"[DRY RUN]\n\n{message}"
+        return {'message': message, 'dry_run': is_dry_run, 'intent': intent,
+                'needs_confirmation': result.get('needs_confirmation', True),
+                'token': result.get('token')}
 
     # Unknown command
     return build_result(handle_unknown(params.get('raw', cleaned_command)), intent='unknown')
+
+
+def handle_confirmation(token: str) -> tuple:
+    """
+    Handle a confirmation link click.
+
+    Args:
+        token: The confirmation token from the URL
+
+    Returns:
+        tuple of (html_response, status_code)
+    """
+    # HTML template for responses
+    def html_response(title: str, message: str, success: bool = True) -> str:
+        color = "#4CAF50" if success else "#f44336"
+        emoji = "✅" if success else "❌"
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>{title}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: #f5f5f5;
+        }}
+        .container {{
+            text-align: center;
+            padding: 40px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            max-width: 400px;
+            margin: 20px;
+        }}
+        .emoji {{ font-size: 64px; margin-bottom: 20px; }}
+        h1 {{ color: {color}; margin: 0 0 16px; font-size: 24px; }}
+        p {{ color: #666; margin: 0; line-height: 1.6; }}
+        .signature {{ margin-top: 24px; color: #999; font-size: 14px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="emoji">{emoji}</div>
+        <h1>{title}</h1>
+        <p>{message}</p>
+        <p class="signature">🥒🏓🤖 SMAD Picklebot</p>
+    </div>
+</body>
+</html>"""
+
+    if not token:
+        return html_response("Missing Token", "No confirmation token provided.", False), 400
+
+    # Retrieve the pending action
+    pending = get_pending_action(token)
+
+    if not pending:
+        return html_response("Invalid Link", "This confirmation link is invalid or has expired.", False), 404
+
+    if pending.get('executed'):
+        return html_response("Already Executed", "This action has already been completed.", False), 409
+
+    # Get action details
+    action = pending.get('action', {})
+    intent = action.get('intent', 'unknown')
+    chat_id = action.get('chat_id', ADMIN_DINKERS_GROUP_ID)
+
+    # Execute the action
+    logger.info(f"Executing confirmed action: {intent}")
+    result = execute_pending_action(action)
+
+    # Mark as executed
+    mark_action_executed(token)
+
+    # Build result message for WhatsApp
+    if result.get('status') == 'success':
+        # Send success message to WhatsApp group
+        display = action.get('display', {})
+        if intent == 'book_court':
+            whatsapp_msg = f"""*{PICKLEBOT_SIGNATURE}*
+
+✅ *Court Booking Triggered!*
+
+📅 {display.get('date', 'Unknown')}
+⏱️ {display.get('duration', 120)} minutes
+🏓 {display.get('court', 'both')}
+
+The booking workflow has been started. Check the SMAD group for the booking result."""
+        elif intent == 'create_poll':
+            whatsapp_msg = f"""*{PICKLEBOT_SIGNATURE}*
+
+✅ *Poll Creation Triggered!*
+
+The poll creation workflow has been started. A new availability poll will be posted to the SMAD group."""
+        elif intent == 'send_reminders':
+            reminder_type = action.get('params', {}).get('type', 'vote')
+            whatsapp_msg = f"""*{PICKLEBOT_SIGNATURE}*
+
+✅ *Reminders Triggered!*
+
+The {reminder_type} reminders workflow has been started."""
+        else:
+            whatsapp_msg = f"""*{PICKLEBOT_SIGNATURE}*
+
+✅ *Action Completed!*
+
+{result.get('message', 'Action executed successfully.')}"""
+
+        send_whatsapp_message(chat_id, whatsapp_msg)
+
+        return html_response(
+            "Action Confirmed!",
+            f"{result.get('message', 'The action has been triggered successfully.')} Check WhatsApp for updates.",
+            True
+        ), 200
+    else:
+        # Send error message to WhatsApp group
+        whatsapp_msg = f"""*{PICKLEBOT_SIGNATURE}*
+
+❌ *Action Failed*
+
+{result.get('message', 'Unknown error')}
+
+Please try again or contact an admin."""
+        send_whatsapp_message(chat_id, whatsapp_msg)
+
+        return html_response(
+            "Action Failed",
+            result.get('message', 'The action could not be completed. Please try again.'),
+            False
+        ), 500
 
 
 @functions_framework.http
@@ -1900,17 +2128,31 @@ def picklebot_webhook(request):
     """
     HTTP Cloud Function entry point for picklebot commands.
 
+    Handles:
+    - POST: Process picklebot commands from WhatsApp
+    - GET with action=confirm: Handle confirmation link clicks
+
     This can be called directly or routed from the main smad-whatsapp-webhook.
     """
     # Handle CORS preflight
     if request.method == 'OPTIONS':
         headers = {
             'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'POST',
+            'Access-Control-Allow-Methods': 'GET, POST',
             'Access-Control-Allow-Headers': 'Content-Type',
             'Access-Control-Max-Age': '3600'
         }
         return ('', 204, headers)
+
+    # Handle GET requests for confirmation links
+    if request.method == 'GET':
+        action = request.args.get('action', '')
+        if action == 'confirm':
+            token = request.args.get('token', '')
+            html, status = handle_confirmation(token)
+            return html, status, {'Content-Type': 'text/html'}
+        else:
+            return {'status': 'ok', 'message': 'SMAD Picklebot is running'}, 200
 
     if request.method != 'POST':
         return {'error': 'Method not allowed'}, 405
