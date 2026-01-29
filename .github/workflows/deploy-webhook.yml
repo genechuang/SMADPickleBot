@@ -85,7 +85,7 @@ jobs:
             --entry-point=picklebot_webhook \
             --trigger-http \
             --allow-unauthenticated \
-            --memory=256MB \
+            --memory=512MB \
             --timeout=60s \
             --set-env-vars "SMAD_SPREADSHEET_ID=1w4_-hnykYgcs6nyyDkie9CwBRwri7aJUblD2mxgNUHY,SMAD_SHEET_NAME=2026 Pickleball,ADMIN_DINKERS_WHATSAPP_GROUP_ID=${{ vars.ADMIN_DINKERS_WHATSAPP_GROUP_ID }},GITHUB_REPO=genechuang/SMADPickleBot" \
             --set-secrets "ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,GREENAPI_INSTANCE_ID=GREENAPI_INSTANCE_ID:latest,GREENAPI_API_TOKEN=GREENAPI_API_TOKEN:latest,SMAD_GOOGLE_CREDENTIALS_JSON=SMAD_GOOGLE_CREDENTIALS_JSON:latest,GITHUB_TOKEN=GITHUB_TOKEN:latest"
