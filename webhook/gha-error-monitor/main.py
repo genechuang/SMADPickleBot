@@ -112,24 +112,36 @@ def fetch_workflow_logs(run_id: int, filter_errors: bool = True, for_booking: bo
 
                 # For booking checks, prioritize the booking script log file
                 if for_booking:
-                    # Look for the main booking script log first
-                    priority_patterns = ['booking', 'book', 'Run booking']
-                    priority_logs = []
+                    # Look for the specific step log with booking script output
+                    # Prefer individual step logs over combined logs (0_*.txt) which are too large
+                    script_log = None
+                    step_logs = []
+                    combined_logs = []
                     other_logs = []
 
                     for name in z.namelist():
                         if name.endswith('.txt'):
                             with z.open(name) as f:
                                 log_content = f.read().decode('utf-8', errors='ignore')
-                                # Check if this is a priority log file
-                                is_priority = any(p.lower() in name.lower() for p in priority_patterns)
-                                if is_priority:
-                                    priority_logs.append(f"=== {name} ===\n{log_content}")
+
+                                # Identify log type
+                                if 'Run booking script' in name or 'booking script' in name.lower():
+                                    # This is the specific step log we want most
+                                    script_log = f"=== {name} ===\n{log_content}"
+                                elif name.startswith('0_'):
+                                    # Combined log file - use as fallback only
+                                    combined_logs.append(f"=== {name} ===\n{log_content}")
+                                elif 'book' in name.lower():
+                                    # Other booking-related step logs
+                                    step_logs.append(f"=== {name} ===\n{log_content}")
                                 elif not filter_errors or 'error' in log_content.lower() or 'failed' in log_content.lower():
                                     other_logs.append(f"=== {name} ===\n{log_content}")
 
-                    # Prioritize booking logs, then add others
-                    all_logs = priority_logs + other_logs
+                    # Build log list: specific script log first, then other steps, then combined
+                    if script_log:
+                        all_logs = [script_log] + step_logs + other_logs
+                    else:
+                        all_logs = step_logs + combined_logs + other_logs
                 else:
                     for name in z.namelist():
                         if name.endswith('.txt'):
