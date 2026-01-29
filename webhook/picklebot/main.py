@@ -407,7 +407,7 @@ def get_poll_votes() -> Optional[dict]:
         if len(data) < 2:
             return None
 
-        # Find the most recent poll date
+        # Find the most recent poll date (poll creation timestamp)
         poll_dates = set()
         for row in data[1:]:
             if len(row) > PPL_COL_POLL_DATE:
@@ -417,7 +417,7 @@ def get_poll_votes() -> Optional[dict]:
             return None
 
         # Get the most recent poll date (sort by timestamp format M/D/YY H:MM:SS)
-        def parse_poll_date(d):
+        def parse_timestamp(d):
             try:
                 return datetime.strptime(d, '%m/%d/%y %H:%M:%S')
             except:
@@ -426,37 +426,48 @@ def get_poll_votes() -> Optional[dict]:
                 except:
                     return datetime.min
 
-        latest_poll_date = max(poll_dates, key=parse_poll_date)
+        latest_poll_date = max(poll_dates, key=parse_timestamp)
         poll_question = ""
 
-        # Collect votes for the latest poll
-        votes_by_option = {}
-        voters = set()
+        # First pass: collect all votes with timestamps per player
+        # We need to keep only the LATEST vote per player (they may change their vote)
+        player_votes = {}  # player_name -> (vote_timestamp, vote_options_str)
 
         for row in data[1:]:
             if len(row) > PPL_COL_VOTE_OPTIONS:
                 row_poll_date = row[PPL_COL_POLL_DATE]
                 if row_poll_date == latest_poll_date:
                     player_name = row[PPL_COL_PLAYER_NAME]
+                    vote_timestamp_str = row[PPL_COL_VOTE_TIMESTAMP] if len(row) > PPL_COL_VOTE_TIMESTAMP else ''
                     vote_options_str = row[PPL_COL_VOTE_OPTIONS]
+
                     if not poll_question and len(row) > PPL_COL_POLL_QUESTION:
                         poll_question = row[PPL_COL_POLL_QUESTION]
 
-                    voters.add(player_name)
+                    # Parse vote timestamp
+                    vote_timestamp = parse_timestamp(vote_timestamp_str)
 
-                    # Parse selected options
-                    selected = [opt.strip() for opt in vote_options_str.split(',') if opt.strip()]
+                    # Keep only the latest vote per player
+                    if player_name not in player_votes or vote_timestamp > player_votes[player_name][0]:
+                        player_votes[player_name] = (vote_timestamp, vote_options_str)
 
-                    for option in selected:
-                        if option not in votes_by_option:
-                            votes_by_option[option] = []
-                        votes_by_option[option].append(player_name)
+        # Second pass: build votes_by_option from latest votes only
+        votes_by_option = {}
+
+        for player_name, (_, vote_options_str) in player_votes.items():
+            # Parse selected options
+            selected = [opt.strip() for opt in vote_options_str.split(',') if opt.strip()]
+
+            for option in selected:
+                if option not in votes_by_option:
+                    votes_by_option[option] = []
+                votes_by_option[option].append(player_name)
 
         return {
             'poll_date': latest_poll_date,
             'question': poll_question,
             'votes_by_option': votes_by_option,
-            'total_voters': len(voters)
+            'total_voters': len(player_votes)
         }
 
     except Exception as e:
