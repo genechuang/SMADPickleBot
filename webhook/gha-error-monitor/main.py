@@ -25,6 +25,7 @@ import hashlib
 import requests
 from datetime import datetime
 import pytz
+from google.cloud import storage
 
 import functions_framework
 
@@ -53,6 +54,10 @@ BOOKING_WORKFLOWS = ['Court Booking']
 
 # Screenshot filename to look for in booking failures
 BOOKING_FAILURE_SCREENSHOT = 'booking_no_slot_found.png'
+
+# GCS bucket for screenshot storage
+GCS_BUCKET_NAME = 'smad-pickleball-screenshots'
+GCS_PROJECT_ID = 'smad-pickleball'
 
 # Patterns indicating booking failures in logs
 BOOKING_FAILURE_PATTERNS = [
@@ -135,90 +140,39 @@ def fetch_screenshot_artifact(run_id: int, filename: str = BOOKING_FAILURE_SCREE
         return None
 
 
-def upload_to_greenapi(image_bytes: bytes, filename: str) -> str | None:
-    """Upload image to GREEN-API and get a URL for sending.
+def upload_screenshot_to_gcs(image_bytes: bytes, run_id: int) -> str | None:
+    """Upload screenshot to Google Cloud Storage and return public URL.
 
     Args:
         image_bytes: The image data
-        filename: Filename for the upload
+        run_id: Workflow run ID (used for unique filename)
 
     Returns:
-        URL to the uploaded file, or None if failed
+        Public URL to the uploaded image, or None if failed
     """
-    if not GREENAPI_INSTANCE_ID or not GREENAPI_API_TOKEN:
-        logger.error("GREEN-API credentials not configured")
-        return None
-
-    url = f"https://api.green-api.com/waInstance{GREENAPI_INSTANCE_ID}/uploadFile/{GREENAPI_API_TOKEN}"
-
     try:
-        # Determine content type
-        content_type = 'image/png' if filename.endswith('.png') else 'image/jpeg'
+        # Create storage client
+        client = storage.Client(project=GCS_PROJECT_ID)
 
-        response = requests.post(
-            url,
-            files={'file': (filename, image_bytes, content_type)},
-            timeout=60
-        )
+        # Get bucket (should already exist with public access via IAM)
+        bucket = client.get_bucket(GCS_BUCKET_NAME)
 
-        if response.status_code == 200:
-            result = response.json()
-            file_url = result.get('urlFile')
-            if file_url:
-                logger.info(f"Screenshot uploaded to GREEN-API: {file_url[:50]}...")
-                return file_url
+        # Generate unique filename with timestamp
+        timestamp = datetime.now(PST).strftime('%Y%m%d_%H%M%S')
+        blob_name = f"booking_failures/{timestamp}_run{run_id}.png"
 
-        logger.warning(f"GREEN-API upload failed: {response.status_code} - {response.text}")
-        return None
+        # Upload the image
+        blob = bucket.blob(blob_name)
+        blob.upload_from_string(image_bytes, content_type='image/png')
+
+        # Get public URL (bucket has uniform bucket-level access with allUsers read)
+        public_url = blob.public_url
+        logger.info(f"Screenshot uploaded to GCS: {public_url}")
+        return public_url
 
     except Exception as e:
-        logger.error(f"Error uploading to GREEN-API: {e}")
+        logger.error(f"Error uploading screenshot to GCS: {e}")
         return None
-
-
-def send_whatsapp_image(recipient_id: str, image_url: str, caption: str) -> bool:
-    """Send an image via WhatsApp using GREEN-API.
-
-    Args:
-        recipient_id: WhatsApp chat ID
-        image_url: URL to the image
-        caption: Caption text for the image
-
-    Returns:
-        True if sent successfully
-    """
-    if not GREENAPI_INSTANCE_ID or not GREENAPI_API_TOKEN:
-        logger.error("GREEN-API credentials not configured")
-        return False
-
-    if not recipient_id:
-        logger.warning("No recipient ID provided")
-        return False
-
-    url = f"https://api.green-api.com/waInstance{GREENAPI_INSTANCE_ID}/sendFileByUrl/{GREENAPI_API_TOKEN}"
-
-    try:
-        response = requests.post(
-            url,
-            json={
-                'chatId': recipient_id,
-                'urlFile': image_url,
-                'fileName': 'booking_screenshot.png',
-                'caption': caption
-            },
-            timeout=30
-        )
-
-        if response.status_code == 200:
-            logger.info(f"Image sent to {recipient_id}")
-            return True
-        else:
-            logger.error(f"Failed to send image: {response.status_code} - {response.text}")
-            return False
-
-    except Exception as e:
-        logger.error(f"WhatsApp image send failed: {e}")
-        return False
 
 
 def diagnose_booking_failure_with_screenshot(logs: str, booking_info: dict, screenshot_bytes: bytes) -> str:
@@ -466,13 +420,15 @@ def detect_booking_failures(logs: str) -> dict:
     """Detect booking failures from workflow logs.
 
     Returns:
-        dict with 'has_failures', 'failed_bookings' list, and 'successful_bookings' count
+        dict with 'has_failures', 'failed_bookings' list, 'successful_bookings' count,
+        and 'failure_reason' if detected from logs
     """
     result = {
         'has_failures': False,
         'failed_bookings': [],
         'successful_count': 0,
-        'failed_count': 0
+        'failed_count': 0,
+        'failure_reason': None  # Extracted from logs if available
     }
 
     if not logs:
@@ -488,6 +444,14 @@ def detect_booking_failures(logs: str) -> dict:
 
     if not result['has_failures']:
         return result
+
+    # Try to extract specific failure reason from logs
+    # Look for "COURT_NOT_RELEASED: X days Y hours Z minutes until reservations open"
+    countdown_match = re.search(r'COURT_NOT_RELEASED:\s*(.+?)(?:\n|$)', logs)
+    if countdown_match:
+        countdown_text = countdown_match.group(1).strip()
+        result['failure_reason'] = f"Court not yet released - {countdown_text}"
+        logger.info(f"Extracted failure reason from logs: {result['failure_reason']}")
 
     # Extract failed booking details
     # Look for patterns like:
@@ -760,7 +724,8 @@ Time: {timestamp}
 
 
 def build_booking_failure_message(workflow_name: str, run_url: str,
-                                   booking_info: dict, diagnosis: str) -> str:
+                                   booking_info: dict, diagnosis: str,
+                                   screenshot_url: str = None) -> str:
     """Build WhatsApp alert message for booking failures."""
     now = datetime.now(PST)
     timestamp = now.strftime('%m/%d/%y %I:%M %p PST')
@@ -793,6 +758,11 @@ Time: {timestamp}
             message += "\n"
 
     message += f"\nReason: {diagnosis}"
+
+    # Add screenshot link if available
+    if screenshot_url:
+        message += f"\n\nScreenshot: {screenshot_url}"
+
     message += f"\n\nRun: {run_url}"
 
     return message
@@ -904,52 +874,45 @@ def gha_error_monitor(request):
                 screenshot_bytes = fetch_screenshot_artifact(run_id, BOOKING_FAILURE_SCREENSHOT)
                 screenshot_url = None
 
+                # Upload screenshot to GCS if available
                 if screenshot_bytes:
                     logger.info(f"Screenshot found: {len(screenshot_bytes)} bytes")
-                    # Upload to GREEN-API for sending
-                    screenshot_url = upload_to_greenapi(screenshot_bytes, BOOKING_FAILURE_SCREENSHOT)
+                    screenshot_url = upload_screenshot_to_gcs(screenshot_bytes, run_id)
 
-                    # Use vision diagnosis with screenshot
+                # Determine diagnosis - prefer log-extracted reason (free & fast)
+                if booking_info.get('failure_reason'):
+                    # Use the reason extracted from logs (no Claude API call needed)
+                    diagnosis = booking_info['failure_reason']
+                    logger.info(f"Using log-extracted diagnosis: {diagnosis}")
+                elif screenshot_bytes:
+                    # Fall back to Claude Vision for unknown failures
+                    logger.info("No specific reason in logs, using Claude Vision")
                     diagnosis = diagnose_booking_failure_with_screenshot(logs, booking_info, screenshot_bytes)
                 else:
+                    # Fall back to text-only Claude or simple diagnosis
                     logger.info("No screenshot available, using text-only diagnosis")
                     diagnosis = diagnose_booking_failure(logs, booking_info)
 
-                # Build booking failure alert
+                # Build booking failure alert (includes screenshot URL if available)
                 alert_message = build_booking_failure_message(
                     workflow_name=workflow_name,
                     run_url=run_url,
                     booking_info=booking_info,
-                    diagnosis=diagnosis
+                    diagnosis=diagnosis,
+                    screenshot_url=screenshot_url
                 )
 
                 # Send notifications
                 sent_group = False
                 sent_dm = False
-                sent_group_image = False
-                sent_dm_image = False
 
                 if ADMIN_DINKERS_GROUP_ID:
                     sent_group = send_whatsapp_message(ADMIN_DINKERS_GROUP_ID, alert_message)
-                    # Send screenshot if available
-                    if screenshot_url:
-                        sent_group_image = send_whatsapp_image(
-                            ADMIN_DINKERS_GROUP_ID,
-                            screenshot_url,
-                            "Booking calendar screenshot"
-                        )
 
                 if ADMIN_PHONE_ID:
                     sent_dm = send_whatsapp_message(ADMIN_PHONE_ID, alert_message)
-                    # Send screenshot if available
-                    if screenshot_url:
-                        sent_dm_image = send_whatsapp_image(
-                            ADMIN_PHONE_ID,
-                            screenshot_url,
-                            "Booking calendar screenshot"
-                        )
 
-                logger.info(f"Booking failure alert sent: group={sent_group}, dm={sent_dm}, images: group={sent_group_image}, dm={sent_dm_image}")
+                logger.info(f"Booking failure alert sent: group={sent_group}, dm={sent_dm}, screenshot_url={screenshot_url is not None}")
                 return {
                     'status': 'processed',
                     'type': 'booking_failure',
@@ -957,12 +920,10 @@ def gha_error_monitor(request):
                     'run_id': run_id,
                     'booking_info': booking_info,
                     'diagnosis': diagnosis,
-                    'screenshot_attached': screenshot_url is not None,
+                    'screenshot_url': screenshot_url,
                     'notifications': {
                         'group': sent_group,
-                        'dm': sent_dm,
-                        'group_image': sent_group_image,
-                        'dm_image': sent_dm_image
+                        'dm': sent_dm
                     }
                 }, 200
             else:

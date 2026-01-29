@@ -1230,16 +1230,38 @@ class AthenaeumBooking:
                 log(f"  Court: {court_name}", 'INFO')
                 log(f"  Time: {start_time}", 'INFO')
                 log(f"  Date: {date_str}", 'INFO')
-                log(f"\nPossible reasons:", 'INFO')
-                log(f"  1. Court is already booked (gray text, no link)", 'INFO')
-                log(f"  2. You already have a reservation (blue box with EDIT)", 'INFO')
-                log(f"  3. Time format doesn't match (use 'H:MM AM' format)", 'INFO')
-                log(f"  4. Court name doesn't match exactly", 'INFO')
-                log(f"\nCheck booking_02_date_entered.png to see available slots", 'INFO')
-                log(f"(Green boxes = available, Gray text = booked by others)", 'INFO')
-                
+
+                # Check if there's a countdown timer (courts not released yet)
+                failure_reason = None
+                try:
+                    # Look for countdown text on the page (e.g., "X days Y hours Z minutes until reservations open")
+                    page_text = await self.page.inner_text('body')
+                    import re
+                    countdown_match = re.search(r'(\d+\s*days?\s*\d+\s*hours?\s*\d+\s*minutes?.*?until\s+reservations\s+open)', page_text, re.IGNORECASE)
+                    if countdown_match:
+                        countdown_text = countdown_match.group(1).strip()
+                        failure_reason = f"COURT_NOT_RELEASED: {countdown_text}"
+                        log(f"\n! FAILURE REASON: Court not yet released", 'INFO')
+                        log(f"  Countdown: {countdown_text}", 'INFO')
+                    else:
+                        # Check if all slots show as red/unavailable (>7 days out)
+                        if 'reservations open' in page_text.lower():
+                            failure_reason = "COURT_NOT_RELEASED: Reservations not yet open"
+                            log(f"\n! FAILURE REASON: Court not yet released (reservations not open)", 'INFO')
+                except Exception as e:
+                    log(f"  (Could not detect specific failure reason: {e})", 'INFO')
+
+                if not failure_reason:
+                    log(f"\nPossible reasons:", 'INFO')
+                    log(f"  1. Court is already booked (gray text, no link)", 'INFO')
+                    log(f"  2. You already have a reservation (blue box with EDIT)", 'INFO')
+                    log(f"  3. Time format doesn't match (use 'H:MM AM' format)", 'INFO')
+                    log(f"  4. Court name doesn't match exactly", 'INFO')
+                    log(f"\nCheck booking_02_date_entered.png to see available slots", 'INFO')
+                    log(f"(Green boxes = available, Gray text = booked by others)", 'INFO')
+
                 await self.page.screenshot(path='booking_no_slot_found.png', full_page=True)
-                
+
                 return False
             
         except Exception as e:

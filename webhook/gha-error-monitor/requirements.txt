@@ -6,3 +6,6 @@ requests==2.*
 
 # Timezone support
 pytz==2024.1
+
+# Google Cloud Storage (for screenshot storage)
+google-cloud-storage==2.*
