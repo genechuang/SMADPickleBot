@@ -1,0 +1,15 @@
+# Google Cloud Functions Framework
+functions-framework==3.*
+
+# HTTP requests (for Claude API, GREEN-API, GitHub API)
+requests==2.*
+
+# Timezone support
+pytz==2024.1
+
+# Google Cloud Storage (for pending action storage)
+google-cloud-storage==2.*
+
+# Google Sheets API
+google-auth==2.*
+google-api-python-client==2.*

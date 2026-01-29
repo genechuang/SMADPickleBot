@@ -34,6 +34,7 @@ from datetime import datetime, timezone, timedelta
 
 import functions_framework
 import pytz
+import requests
 
 # PST timezone for all date/time operations
 PST = pytz.timezone('America/Los_Angeles')
@@ -59,6 +60,70 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
 # WhatsApp group ID to process votes from (only process votes from SMAD group, not Admin Dinkers)
 SMAD_WHATSAPP_GROUP_ID = os.environ.get('SMAD_WHATSAPP_GROUP_ID', '')
+
+# Admin Dinkers group ID for picklebot commands
+ADMIN_DINKERS_GROUP_ID = os.environ.get('ADMIN_DINKERS_WHATSAPP_GROUP_ID', '')
+
+# Picklebot command prefixes
+PICKLEBOT_PREFIXES = ['/pb ', '/picklebot ']
+
+# Picklebot Cloud Function URL
+PICKLEBOT_URL = os.environ.get('PICKLEBOT_URL', '')
+
+
+def is_picklebot_command(text: str) -> bool:
+    """Check if text starts with a picklebot command prefix."""
+    text_lower = text.lower()
+    return any(text_lower.startswith(prefix) for prefix in PICKLEBOT_PREFIXES)
+
+
+def forward_to_picklebot(command_text: str, sender_data: dict, dry_run: bool = False) -> dict:
+    """
+    Forward a picklebot command to the picklebot Cloud Function.
+
+    Args:
+        command_text: The full command text (e.g., "/pb help")
+        sender_data: Sender info from the webhook (chatId, sender, senderName)
+        dry_run: If True, don't send WhatsApp messages (for testing)
+
+    Returns:
+        Response from picklebot or error dict
+    """
+    if not PICKLEBOT_URL:
+        print("PICKLEBOT_URL not configured, cannot forward command", flush=True)
+        return {'status': 'error', 'message': 'Picklebot not configured'}
+
+    try:
+        payload = {
+            'command': command_text,
+            'chatId': sender_data.get('chatId', ''),
+            'sender': sender_data.get('sender', ''),
+            'senderName': sender_data.get('senderName', ''),
+            'dry_run': dry_run
+        }
+
+        print(f"Forwarding to picklebot: {payload}", flush=True)
+
+        response = requests.post(
+            PICKLEBOT_URL,
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Picklebot returned {response.status_code}: {response.text}", flush=True)
+            return {'status': 'error', 'message': f'Picklebot error: {response.status_code}'}
+
+    except requests.Timeout:
+        print("Picklebot request timed out", flush=True)
+        return {'status': 'error', 'message': 'Picklebot timeout'}
+    except Exception as e:
+        print(f"Error forwarding to picklebot: {e}", flush=True)
+        return {'status': 'error', 'message': str(e)}
+
 
 # Column indices for main sheet (to find player names by phone)
 COL_FIRST_NAME = 0
@@ -762,9 +827,21 @@ def webhook(request):
         message_data = data.get('messageData', {})
         type_message = message_data.get('typeMessage', '')
 
-        # Filter by group ID - only process votes from SMAD group (not Admin Dinkers)
         sender_data = data.get('senderData', {})
         chat_id = sender_data.get('chatId', '')
+
+        # Check for picklebot commands from Admin Dinkers group
+        if ADMIN_DINKERS_GROUP_ID and chat_id == ADMIN_DINKERS_GROUP_ID:
+            if type_message == 'textMessage':
+                text_message_data = message_data.get('textMessageData', {})
+                text = text_message_data.get('textMessage', '')
+
+                if is_picklebot_command(text):
+                    print(f"Picklebot command detected: {text}", flush=True)
+                    result = forward_to_picklebot(text, sender_data)
+                    return result, 200
+
+        # Filter by group ID - only process votes from SMAD group (not Admin Dinkers)
         if SMAD_WHATSAPP_GROUP_ID and chat_id != SMAD_WHATSAPP_GROUP_ID:
             print(f"Ignoring message from non-SMAD group: {chat_id}", flush=True)
             return {'status': 'ignored', 'reason': 'non-SMAD group'}, 200
