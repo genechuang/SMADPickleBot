@@ -1231,23 +1231,66 @@ class AthenaeumBooking:
                 log(f"  Time: {start_time}", 'INFO')
                 log(f"  Date: {date_str}", 'INFO')
 
-                # Check if there's a countdown timer (courts not released yet)
+                # Detect specific failure reason
                 failure_reason = None
+                import re
+
                 try:
-                    # Look for countdown text on the page (e.g., "X days Y hours Z minutes until reservations open")
                     page_text = await self.page.inner_text('body')
-                    import re
+
+                    # Priority 1: Check for countdown timer (courts not released yet)
                     countdown_match = re.search(r'(\d+\s*days?\s*\d+\s*hours?\s*\d+\s*minutes?.*?until\s+reservations\s+open)', page_text, re.IGNORECASE)
                     if countdown_match:
                         countdown_text = countdown_match.group(1).strip()
                         failure_reason = f"COURT_NOT_RELEASED: {countdown_text}"
                         log(f"\n! FAILURE REASON: Court not yet released", 'INFO')
                         log(f"  Countdown: {countdown_text}", 'INFO')
-                    else:
-                        # Check if all slots show as red/unavailable (>7 days out)
-                        if 'reservations open' in page_text.lower():
-                            failure_reason = "COURT_NOT_RELEASED: Reservations not yet open"
-                            log(f"\n! FAILURE REASON: Court not yet released (reservations not open)", 'INFO')
+                    elif 'reservations open' in page_text.lower():
+                        failure_reason = "COURT_NOT_RELEASED: Reservations not yet open"
+                        log(f"\n! FAILURE REASON: Court not yet released (reservations not open)", 'INFO')
+
+                    # Priority 2: Check if user already has this court reserved (blue box with Edit)
+                    if not failure_reason:
+                        # Look for Edit button in the row with our target time
+                        for cell in all_cells:
+                            try:
+                                parent_row = await cell.evaluate_handle('el => el.closest("tr")')
+                                row_text = await parent_row.evaluate('el => el.innerText')
+
+                                if start_time not in row_text:
+                                    continue
+
+                                # Check if this cell contains our court name AND has an Edit button
+                                cell_text = await cell.inner_text()
+                                if court_name in cell_text:
+                                    # Look for Edit button (indicates user's own reservation)
+                                    edit_button = await cell.query_selector('a:has-text("Edit"), button:has-text("Edit"), [onclick*="Edit"]')
+                                    if edit_button:
+                                        failure_reason = f"ALREADY_RESERVED: You already have {court_name} reserved at {start_time}"
+                                        log(f"\n! FAILURE REASON: Already reserved by you", 'INFO')
+                                        log(f"  You already have {court_name} at {start_time}", 'INFO')
+                                        break
+
+                                    # Check if it's a booked slot (has court name but no onclick = booked by others)
+                                    court_div = await cell.query_selector('div')
+                                    if court_div:
+                                        onclick = await court_div.get_attribute('onclick')
+                                        if not onclick or onclick == '':
+                                            # No onclick means it's not bookable - either booked by others or reserved by user
+                                            # Check for blue class (user's reservation) vs gray (others)
+                                            div_class = await court_div.get_attribute('class') or ''
+                                            if 'Reserved' in div_class or 'Booked' in div_class:
+                                                failure_reason = f"ALREADY_RESERVED: You already have {court_name} reserved at {start_time}"
+                                                log(f"\n! FAILURE REASON: Already reserved by you", 'INFO')
+                                                log(f"  You already have {court_name} at {start_time}", 'INFO')
+                                            else:
+                                                failure_reason = f"BOOKED_BY_OTHERS: {court_name} at {start_time} is already booked"
+                                                log(f"\n! FAILURE REASON: Court booked by someone else", 'INFO')
+                                                log(f"  {court_name} at {start_time} is already taken", 'INFO')
+                                            break
+                            except:
+                                continue
+
                 except Exception as e:
                     log(f"  (Could not detect specific failure reason: {e})", 'INFO')
 
@@ -1257,7 +1300,7 @@ class AthenaeumBooking:
                     log(f"  2. You already have a reservation (blue box with EDIT)", 'INFO')
                     log(f"  3. Time format doesn't match (use 'H:MM AM' format)", 'INFO')
                     log(f"  4. Court name doesn't match exactly", 'INFO')
-                    log(f"\nCheck booking_02_date_entered.png to see available slots", 'INFO')
+                    log(f"\nCheck booking_no_slot_found.png to see available slots", 'INFO')
                     log(f"(Green boxes = available, Gray text = booked by others)", 'INFO')
 
                 await self.page.screenshot(path='booking_no_slot_found.png', full_page=True)
