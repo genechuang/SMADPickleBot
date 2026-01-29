@@ -57,8 +57,8 @@ SHEET_NAME = os.environ.get('SMAD_SHEET_NAME', '2026 Pickleball')
 GCS_BUCKET_NAME = 'smad-pickleball-screenshots'
 GCS_PROJECT_ID = 'smad-pickleball'
 
-# Bot signature
-PICKLEBOT_SIGNATURE = "SMAD Picklebot"
+# Bot signature (matching court booking summary)
+PICKLEBOT_SIGNATURE = "SMAD Picklebot🥒🏓🤖"
 
 # Column indices for player data
 COL_FIRST_NAME = 0
