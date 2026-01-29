@@ -1264,13 +1264,19 @@ class AthenaeumBooking:
                     # Priority 2: Check if user already has this court reserved (blue box with Edit)
                     # ONLY check this if no countdown was found (courts are released)
                     if not failure_reason:
+                        # Normalize start_time for comparison (handle "08:00 AM" vs "8:00 AM")
+                        normalized_start = start_time.lstrip('0') if start_time.startswith('0') else start_time
+                        # Also prepare version with leading zero stripped from hour
+                        alt_start = re.sub(r'^0(\d:\d{2})', r'\1', start_time)
+
                         # Look for Edit button in the row with our target time
                         for cell in all_cells:
                             try:
                                 parent_row = await cell.evaluate_handle('el => el.closest("tr")')
                                 row_text = await parent_row.evaluate('el => el.innerText')
 
-                                if start_time not in row_text:
+                                # Check both time formats (with and without leading zero)
+                                if start_time not in row_text and normalized_start not in row_text and alt_start not in row_text:
                                     continue
 
                                 # Check if this cell contains our court name AND has an Edit button
